@@ -103,12 +103,7 @@ func NewStore(b backend.Backend, le lease.Lessor, ig ConsistentIndexGetter) *sto
 		s.le.SetRangeDeleter(s)
 	}
 
-	tx := s.b.BatchTx()
-	tx.Lock()
-	tx.UnsafeCreateBucket(keyBucketName)
-	tx.UnsafeCreateBucket(metaBucketName)
-	tx.Unlock()
-	s.b.ForceCommit()
+	makeKVBuckets(s.b)
 
 	if err := s.restore(); err != nil {
 		// TODO: return the error instead of panic here?
@@ -116,6 +111,15 @@ func NewStore(b backend.Backend, le lease.Lessor, ig ConsistentIndexGetter) *sto
 	}
 
 	return s
+}
+
+func makeKVBuckets(b backend.Backend) {
+	tx := b.BatchTx()
+	tx.Lock()
+	tx.UnsafeCreateBucket(keyBucketName)
+	tx.UnsafeCreateBucket(metaBucketName)
+	tx.Unlock()
+	b.ForceCommit()
 }
 
 func (s *store) Rev() int64 {
@@ -633,4 +637,27 @@ func revBytesRange(rev revision) (start, end []byte) {
 	revToBytes(endRev, end)
 
 	return start, end
+}
+
+func WriteBackend(b backend.Backend, ch <-chan []storagepb.Event) error {
+	makeKVBuckets(b)
+	tx := b.BatchTx()
+	tx.Lock()
+	for evs := range ch {
+		for i, ev := range evs {
+			ibytes := newRevBytes()
+			revToBytes(revision{main: ev.Kv.ModRevision, sub: i}, ibytes)
+			if ev.Type == DELETE || ev.Type == EXPIRE {
+				ibytes = appendMarkTombstone(ibytes)
+			}
+			d, err := kv.Marshal()
+			if err != nil {
+				return err
+			}
+			s.tx.UnsafeSeqPut(keyBucketName, ibytes, d)
+		}
+	}
+	tx.Unlock()
+	tx.ForceCommit()
+	return nil
 }
