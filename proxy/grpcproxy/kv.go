@@ -15,11 +15,14 @@
 package grpcproxy
 
 import (
+	"fmt"
+
 	"github.com/coreos/etcd/clientv3"
 	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
 	"github.com/coreos/etcd/proxy/grpcproxy/cache"
 
 	"golang.org/x/net/context"
+	grpc "google.golang.org/grpc"
 )
 
 type kvProxy struct {
@@ -27,14 +30,60 @@ type kvProxy struct {
 	cache cache.Cache
 }
 
-func NewKvProxy(c *clientv3.Client) pb.KVServer {
+func newKvProxy(c *clientv3.Client) *kvProxy {
 	return &kvProxy{
 		kv:    c.KV,
 		cache: cache.NewCache(cache.DefaultMaxEntries),
 	}
 }
 
-func (p *kvProxy) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeResponse, error) {
+type kvProxyServer kvProxy
+func NewKvProxyServer(c *clientv3.Client) pb.KVServer { return (*kvProxyServer)(newKvProxy(c)) }
+
+func (p *kvProxyServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeResponse, error)  {
+	return ((*kvProxy)(p)).get(ctx, r)
+}
+
+func (p *kvProxyServer) Put(ctx context.Context, r *pb.PutRequest) (*pb.PutResponse, error) {
+	return ((*kvProxy)(p)).put(ctx, r)
+}
+
+func (p *kvProxyServer) DeleteRange(ctx context.Context, r *pb.DeleteRangeRequest) (*pb.DeleteRangeResponse, error) {
+	return ((*kvProxy)(p)).deleteRange(ctx, r)
+}
+
+func (p *kvProxyServer) Compact(ctx context.Context, r *pb.CompactionRequest) (*pb.CompactionResponse, error) {
+	return ((*kvProxy)(p)).compact(ctx, r)
+}
+
+func (p *kvProxyServer) Txn(ctx context.Context, r *pb.TxnRequest) (*pb.TxnResponse, error) {
+	return ((*kvProxy)(p)).txn(ctx, r)
+}
+
+type kvProxyClient kvProxy
+func NewKvProxyClient(c *clientv3.Client) pb.KVClient { return (*kvProxyClient)(newKvProxy(c)) }
+
+func (p *kvProxyClient) Range(ctx context.Context, r *pb.RangeRequest, copts ...grpc.CallOption) (*pb.RangeResponse, error)  {
+	return ((*kvProxy)(p)).get(ctx, r, copts...)
+}
+
+func (p *kvProxyClient) Put(ctx context.Context, r *pb.PutRequest, copts ...grpc.CallOption) (*pb.PutResponse, error) {
+	return ((*kvProxy)(p)).put(ctx, r, copts...)
+}
+
+func (p *kvProxyClient) DeleteRange(ctx context.Context, r *pb.DeleteRangeRequest, copts ...grpc.CallOption) (*pb.DeleteRangeResponse, error) {
+	return ((*kvProxy)(p)).deleteRange(ctx, r, copts...)
+}
+
+func (p *kvProxyClient) Compact(ctx context.Context, r *pb.CompactionRequest, copts ...grpc.CallOption) (*pb.CompactionResponse, error) {
+	return ((*kvProxy)(p)).compact(ctx, r, copts...)
+}
+
+func (p *kvProxyClient) Txn(ctx context.Context, r *pb.TxnRequest, copts ...grpc.CallOption) (*pb.TxnResponse, error) {
+	return ((*kvProxy)(p)).txn(ctx, r, copts...)
+}
+
+func (p *kvProxy) get(ctx context.Context, r *pb.RangeRequest, copts ...grpc.CallOption) (*pb.RangeResponse, error) {
 	if r.Serializable {
 		resp, err := p.cache.Get(r)
 		switch err {
@@ -59,13 +108,13 @@ func (p *kvProxy) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeRespo
 	return gresp, nil
 }
 
-func (p *kvProxy) Put(ctx context.Context, r *pb.PutRequest) (*pb.PutResponse, error) {
+func (p *kvProxy) put(ctx context.Context, r *pb.PutRequest, copts ...grpc.CallOption) (*pb.PutResponse, error) {
 	p.cache.Invalidate(r.Key, nil)
-	resp, err := p.kv.Do(ctx, PutRequestToOp(r))
+	resp, err := p.kv.Do(ctx, PutRequestToOp(r, copts...))
 	return (*pb.PutResponse)(resp.Put()), err
 }
 
-func (p *kvProxy) DeleteRange(ctx context.Context, r *pb.DeleteRangeRequest) (*pb.DeleteRangeResponse, error) {
+func (p *kvProxy) deleteRange(ctx context.Context, r *pb.DeleteRangeRequest, copts ...grpc.CallOption) (*pb.DeleteRangeResponse, error) {
 	p.cache.Invalidate(r.Key, r.RangeEnd)
 	resp, err := p.kv.Do(ctx, DelRequestToOp(r))
 	return (*pb.DeleteRangeResponse)(resp.Del()), err
@@ -87,7 +136,7 @@ func (p *kvProxy) txnToCache(reqs []*pb.RequestOp, resps []*pb.ResponseOp) {
 	}
 }
 
-func (p *kvProxy) Txn(ctx context.Context, r *pb.TxnRequest) (*pb.TxnResponse, error) {
+func (p *kvProxy) txn(ctx context.Context, r *pb.TxnRequest, copts ...grpc.CallOption) (*pb.TxnResponse, error) {
 	txn := p.kv.Txn(ctx)
 	cmps := make([]clientv3.Cmp, len(r.Compare))
 	thenops := make([]clientv3.Op, len(r.Success))
@@ -123,7 +172,7 @@ func (p *kvProxy) Txn(ctx context.Context, r *pb.TxnRequest) (*pb.TxnResponse, e
 	return (*pb.TxnResponse)(resp), nil
 }
 
-func (p *kvProxy) Compact(ctx context.Context, r *pb.CompactionRequest) (*pb.CompactionResponse, error) {
+func (p *kvProxy) compact(ctx context.Context, r *pb.CompactionRequest, copts ...grpc.CallOption) (*pb.CompactionResponse, error) {
 	var opts []clientv3.CompactOption
 	if r.Physical {
 		opts = append(opts, clientv3.WithCompactPhysical())
@@ -178,10 +227,10 @@ func RangeRequestToOp(r *pb.RangeRequest) clientv3.Op {
 	return clientv3.OpGet(string(r.Key), opts...)
 }
 
-func PutRequestToOp(r *pb.PutRequest) clientv3.Op {
-	opts := []clientv3.OpOption{}
-	opts = append(opts, clientv3.WithLease(clientv3.LeaseID(r.Lease)))
-
+func PutRequestToOp(r *pb.PutRequest, copts ...grpc.CallOption) clientv3.Op {
+	opts := []clientv3.OpOption{clientv3.WithLease(clientv3.LeaseID(r.Lease))}
+	opts = append(opts, clientv3.WithCallOptions(copts...))
+	fmt.Println("MAKING OPPUT")
 	return clientv3.OpPut(string(r.Key), string(r.Value), opts...)
 }
 

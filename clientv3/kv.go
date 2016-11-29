@@ -15,6 +15,8 @@
 package clientv3
 
 import (
+	"fmt"
+
 	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
@@ -142,21 +144,24 @@ func (kv *kv) do(ctx context.Context, op Op) (OpResponse, error) {
 	// TODO: handle other ops
 	case tRange:
 		var resp *pb.RangeResponse
-		resp, err = kv.remote.Range(ctx, op.toRangeRequest(), grpc.FailFast(false))
+		opts := append([]grpc.CallOption{grpc.FailFast(false)}, op.callOpts...)
+		resp, err = kv.remote.Range(ctx, op.toRangeRequest(), opts...)
 		if err == nil {
 			return OpResponse{get: (*GetResponse)(resp)}, nil
 		}
 	case tPut:
 		var resp *pb.PutResponse
 		r := &pb.PutRequest{Key: op.key, Value: op.val, Lease: int64(op.leaseID), PrevKv: op.prevKV}
-		resp, err = kv.remote.Put(ctx, r)
+		fmt.Println("doing put", op.callOpts)
+		resp, err = kv.remote.Put(ctx, r, op.callOpts...)
+		fmt.Println("done doing put....")
 		if err == nil {
 			return OpResponse{put: (*PutResponse)(resp)}, nil
 		}
 	case tDeleteRange:
 		var resp *pb.DeleteRangeResponse
 		r := &pb.DeleteRangeRequest{Key: op.key, RangeEnd: op.end, PrevKv: op.prevKV}
-		resp, err = kv.remote.DeleteRange(ctx, r)
+		resp, err = kv.remote.DeleteRange(ctx, r, op.callOpts...)
 		if err == nil {
 			return OpResponse{del: (*DeleteResponse)(resp)}, nil
 		}

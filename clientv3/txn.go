@@ -110,6 +110,9 @@ func (txn *txn) Then(ops ...Op) Txn {
 
 	for _, op := range ops {
 		txn.isWrite = txn.isWrite || op.isWrite()
+		if op.callOpts != nil {
+			panic("call options not supported for txn")
+		}
 		txn.sus = append(txn.sus, op.toRequestOp())
 	}
 
@@ -128,6 +131,9 @@ func (txn *txn) Else(ops ...Op) Txn {
 
 	for _, op := range ops {
 		txn.isWrite = txn.isWrite || op.isWrite()
+		if op.callOpts != nil {
+			panic("call options not supported for txn")
+		}
 		txn.fas = append(txn.fas, op.toRequestOp())
 	}
 

@@ -38,7 +38,7 @@ func toGRPC(c *clientv3.Client) grpcAPI {
 	}
 	api := grpcAPI{
 		pb.NewClusterClient(c.ActiveConnection()),
-		grpcproxy.KvServerToKvClient(grpcproxy.NewKvProxy(c)),
+		grpcproxy.NewKvProxyClient(c),
 		pb.NewLeaseClient(c.ActiveConnection()),
 		grpcproxy.WatchServerToWatchClient(grpcproxy.NewWatchProxy(c)),
 		pb.NewMaintenanceClient(c.ActiveConnection()),

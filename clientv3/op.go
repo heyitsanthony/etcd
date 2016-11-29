@@ -14,7 +14,11 @@
 
 package clientv3
 
-import pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
+import (
+	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
+
+	"google.golang.org/grpc"
+)
 
 type opType int
 
@@ -34,6 +38,9 @@ type Op struct {
 	t   opType
 	key []byte
 	end []byte
+
+	// for proxy pass-through
+	callOpts []grpc.CallOption
 
 	// for range
 	limit        int64
@@ -358,6 +365,11 @@ func WithPrevKV() OpOption {
 	return func(op *Op) {
 		op.prevKV = true
 	}
+}
+
+// WithCallOption passes gRPC call options to override the default client call options.
+func WithCallOptions(opts ...grpc.CallOption) OpOption {
+	return func(op *Op) { op.callOpts = opts }
 }
 
 // LeaseOp represents an Operation that lease can execute.

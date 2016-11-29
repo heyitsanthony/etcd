@@ -15,6 +15,7 @@
 package clientv3
 
 import (
+	"fmt"
 	"github.com/coreos/etcd/etcdserver/api/v3rpc/rpctypes"
 	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
 	"golang.org/x/net/context"
@@ -28,10 +29,13 @@ type retryRpcFunc func(context.Context, rpcFunc) error
 func (c *Client) newRetryWrapper() retryRpcFunc {
 	return func(rpcCtx context.Context, f rpcFunc) error {
 		for {
+			fmt.Println("retry in wrapper..")
 			err := f(rpcCtx)
 			if err == nil {
 				return nil
 			}
+
+			fmt.Println("RETRY!?", err)
 
 			// only retry if unavailable
 			if grpc.Code(err) != codes.Unavailable {
@@ -43,6 +47,7 @@ func (c *Client) newRetryWrapper() retryRpcFunc {
 				return err
 			}
 
+			fmt.Println("waiting for update..")
 			select {
 			case <-c.balancer.ConnectNotify():
 			case <-rpcCtx.Done():
@@ -50,6 +55,7 @@ func (c *Client) newRetryWrapper() retryRpcFunc {
 			case <-c.ctx.Done():
 				return c.ctx.Err()
 			}
+			fmt.Println("GOT UPDATE!")
 		}
 	}
 }
@@ -65,6 +71,7 @@ func RetryKVClient(c *Client) pb.KVClient {
 }
 
 func (rkv *retryKVClient) Put(ctx context.Context, in *pb.PutRequest, opts ...grpc.CallOption) (resp *pb.PutResponse, err error) {
+	fmt.Println("got the retryKVC put...")
 	err = rkv.retryf(ctx, func(rctx context.Context) error {
 		resp, err = rkv.KVClient.Put(rctx, in, opts...)
 		return err

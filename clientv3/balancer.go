@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"fmt"
 
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
@@ -133,6 +134,8 @@ func (b *simpleBalancer) Up(addr grpc.Address) func(error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	fmt.Printf("%p got UP addr %v\n", b, addr)
+
 	// gRPC might call Up after it called Close. We add this check
 	// to "fix" it up at application layer. Or our simplerBalancer
 	// might panic since b.upc is closed.
@@ -151,6 +154,7 @@ func (b *simpleBalancer) Up(addr grpc.Address) func(error) {
 	b.readyOnce.Do(func() { close(b.readyc) })
 
 	return func(err error) {
+		fmt.Printf("%p GOT DOWN %v %v\n", b, addr, err)
 		b.mu.Lock()
 		delete(b.upEps, addr.Addr)
 		if len(b.upEps) == 0 && b.pinAddr != "" {
@@ -173,30 +177,33 @@ func (b *simpleBalancer) Get(ctx context.Context, opts grpc.BalancerGetOptions) 
 	// an address it has notified via Notify immediately instead of blocking.
 	if !opts.BlockingWait {
 		b.mu.RLock()
+		defer b.mu.RUnlock()
 		closed := b.closed
 		addr = b.pinAddr
-		upEps := len(b.upEps)
-		b.mu.RUnlock()
 		if closed {
 			return grpc.Address{Addr: ""}, nil, grpc.ErrClientConnClosing
 		}
-
-		if upEps == 0 {
+		if len(b.upEps) == 0 {
 			return grpc.Address{Addr: ""}, nil, ErrNoAddrAvilable
 		}
 		return grpc.Address{Addr: addr}, func() {}, nil
 	}
 
+	fmt.Printf("%p getting the stuff... %d\n", b, len(b.upEps))
+	defer func() { fmt.Println("exiting balacner") }()
 	for {
 		b.mu.RLock()
 		ch := b.upc
 		b.mu.RUnlock()
+		fmt.Println("waiting for channel..")
 		select {
 		case <-ch:
 		case <-ctx.Done():
 			return grpc.Address{Addr: ""}, nil, ctx.Err()
 		}
+		fmt.Println("got the channel...")
 		b.mu.RLock()
+		fmt.Println("here is the chan...")
 		addr = b.pinAddr
 		upEps := len(b.upEps)
 		b.mu.RUnlock()
@@ -207,6 +214,7 @@ func (b *simpleBalancer) Get(ctx context.Context, opts grpc.BalancerGetOptions) 
 			break
 		}
 	}
+	fmt.Println("returning addr", addr)
 	return grpc.Address{Addr: addr}, func() {}, nil
 }
 
