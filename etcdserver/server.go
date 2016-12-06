@@ -741,6 +741,11 @@ func (s *EtcdServer) run() {
 }
 
 func (s *EtcdServer) applyAll(ep *etcdProgress, apply *apply) {
+	// gofail: var serverApplyAll struct{}
+	if rand.Intn(3) == 0 {
+		time.Sleep(50 * time.Millisecond)
+	}
+
 	s.applySnapshot(ep, apply)
 	st := time.Now()
 	s.applyEntries(ep, apply)
