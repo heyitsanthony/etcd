@@ -6,6 +6,19 @@
 
 [Raft][raft] is leader-based; the leader handles all client requests which need cluster consensus. However, the client does not need to know which node is the leader. Any request that requires consensus sent to a follower is automatically forwarded to the leader. Requests that do not require consensus (e.g., serialized reads) can be processed by any cluster member.
 
+#### What is the difference between linearized/quorum and serialized reads?
+
+If you want to read from etcd when you are a node in the minority after a network partition, you will get this warning by default:
+
+etcdserver: timed out waiting for read index response
+
+...and your read will fail.
+
+Serialized reads access the current state of a single member. A serialized read will work even if the member is partitioned from the rest of the cluster or it quorum is lost.
+However, since a serialized read does not go through consensus, there is no guarantee the data is current with respect to the rest of the cluster.
+
+If you don't mind getting stale read results, you can use WithSerializable and still read, even when your node is a member of the minority.
+
 ### Configuration
 
 #### What is the difference between advertise-urls and listen-urls?
