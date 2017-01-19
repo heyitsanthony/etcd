@@ -10,7 +10,7 @@
 
 If you want to read from etcd when you are a node in the minority after a network partition, you will get this warning by default:
 
-etcdserver: timed out waiting for read index response
+However, it the member fails to participate in consensus, a serialized read will time out with `etcdserver: timed out waiting for read index response`.
 
 ...and your read will fail.
 
