@@ -132,6 +132,8 @@ type lessor struct {
 type keepAlive struct {
 	chs  []chan<- *LeaseKeepAliveResponse
 	ctxs []context.Context
+	// cancels lists cancels for WithRequireLeader ctxs
+	cancels []context.CancelFunc
 	// deadline is the time the keep alive channels close if no response
 	deadline time.Time
 	// nextKeepAlive is when to send the next keep alive message
@@ -225,6 +227,11 @@ func (l *lessor) TimeToLive(ctx context.Context, id LeaseID, opts ...LeaseOption
 func (l *lessor) KeepAlive(ctx context.Context, id LeaseID) (<-chan *LeaseKeepAliveResponse, error) {
 	ch := make(chan *LeaseKeepAliveResponse, leaseResponseChSize)
 
+	var cancel context.CancelFunc
+	if ctx.Value(rpctypes.MetadataRequireLeaderKey) == rpctypes.MetadataHasLeader {
+		ctx, cancel = context.WithCancel(ctx)
+	}
+
 	l.mu.Lock()
 	// ensure that recvKeepAliveLoop is still running
 	select {
@@ -241,6 +248,7 @@ func (l *lessor) KeepAlive(ctx context.Context, id LeaseID) (<-chan *LeaseKeepAl
 		ka = &keepAlive{
 			chs:           []chan<- *LeaseKeepAliveResponse{ch},
 			ctxs:          []context.Context{ctx},
+			cancels:	[]context.CancelFunc{cancel},
 			deadline:      time.Now().Add(l.firstKeepAliveTimeout),
 			nextKeepAlive: time.Now(),
 			donec:         make(chan struct{}),
@@ -361,12 +369,22 @@ func (l *lessor) recvKeepAliveLoop() (gerr error) {
 			if isHaltErr(l.stopCtx, err) {
 				return err
 			}
+			if err == rpctypes.ErrNoLeader {
+			}
 			stream, serr = l.resetRecv()
 			continue
 		}
 		l.recvKeepAlive(resp)
 	}
 	return serr
+}
+
+func (l *lessor) closeRequireLeader() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, ka := range l.keepAlives {
+		if 
+	}
 }
 
 // resetRecv opens a new lease stream and starts sending LeaseKeepAliveRequests
