@@ -62,7 +62,9 @@ func CheckLeakedGoroutine() bool {
 	return true
 }
 
-func AfterTest(t *testing.T) {
+func AfterTest(t *testing.T) { AfterTestRetry(t, 6) }
+
+func AfterTestRetry(t *testing.T, retries int) {
 	http.DefaultTransport.(*http.Transport).CloseIdleConnections()
 	if testing.Short() {
 		return
@@ -78,7 +80,7 @@ func AfterTest(t *testing.T) {
 	}
 
 	var stacks string
-	for i := 0; i < 6; i++ {
+	for i := 0; i < retries; i++ {
 		bad = ""
 		stacks = strings.Join(interestingGoroutines(), "\n\n")
 		for substr, what := range badSubstring {
