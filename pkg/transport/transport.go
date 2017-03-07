@@ -15,40 +15,57 @@
 package transport
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"strings"
 	"time"
 )
 
+type CancelableTransport struct {
+	*http.Transport
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+func (c *CancelableTransport) Ctx() context.Context { return c.ctx }
+func (c *CancelableTransport) Cancel()              { c.cancel() }
+
 type unixTransport struct{ *http.Transport }
 
-func NewTransport(info TLSInfo, dialtimeoutd time.Duration) (*http.Transport, error) {
+func NewTransport(info TLSInfo, dialtimeoutd time.Duration) (*CancelableTransport, error) {
 	cfg, err := info.ClientConfig()
 	if err != nil {
 		return nil, err
 	}
 
+	ctx, cancel := context.WithCancel(context.TODO())
+
+	tdialer := &net.Dialer{
+		Timeout: dialtimeoutd,
+		// value taken from http.DefaultTransport
+		KeepAlive: 30 * time.Second,
+	}
+	tdial := func(net, addr string) (net.Conn, error) {
+		return tdialler.DialWithContext(ctx, net, addr)
+	}
 	t := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
-		Dial: (&net.Dialer{
-			Timeout: dialtimeoutd,
-			// value taken from http.DefaultTransport
-			KeepAlive: 30 * time.Second,
-		}).Dial,
+		Dial:  tdial,
 		// value taken from http.DefaultTransport
 		TLSHandshakeTimeout: 10 * time.Second,
 		TLSClientConfig:     cfg,
 	}
+
+	ct := &CancelableTransport{t, ctx, cancel}
 
 	dialer := (&net.Dialer{
 		Timeout:   dialtimeoutd,
 		KeepAlive: 30 * time.Second,
 	})
 	dial := func(net, addr string) (net.Conn, error) {
-		return dialer.Dial("unix", addr)
+		return dialer.DialWithContext(ctx, "unix", addr)
 	}
-
 	tu := &http.Transport{
 		Proxy:               http.ProxyFromEnvironment,
 		Dial:                dial,
