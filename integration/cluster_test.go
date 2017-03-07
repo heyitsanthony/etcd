@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -521,4 +522,42 @@ func TestTransferLeader(t *testing.T) {
 	if oldLeadID == newLeadIDs[0] {
 		t.Fatalf("expected old leader %d != new leader %d", oldLeadID, newLeadIDs[0])
 	}
+}
+
+func TestClusterBlackholeDial(t *testing.T) {
+	defer testutil.AfterTestRetry(t, 1)
+	clus := NewClusterV3(t, &ClusterConfig{Size: 3})
+	defer clus.Terminate(t)
+	clus.Client(0).MemberAdd(context.Background(), []string{"http://254.0.0.1:23799"})
+}
+
+func TestClusterBlackholeListen(t *testing.T) {
+	ln, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var conns []net.Conn
+	donec := make(chan struct{})
+	go func() {
+		defer close(donec)
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				break
+			}
+			conns = append(conns, conn)
+		}
+	}()
+	clus := NewClusterV3(t, &ClusterConfig{Size: 3})
+	defer func() {
+		ln.Close()
+		clus.Terminate(t)
+		<-donec
+		testutil.AfterTestRetry(t, 1)
+		for i := range conns {
+			conns[i].Close()
+		}
+	}()
+	clus.Client(0).MemberAdd(context.TODO(), []string{"http://" + ln.Addr().String()})
+	clus.Client(0).Put(context.TODO(), "A", "B")
 }
