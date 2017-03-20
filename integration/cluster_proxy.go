@@ -17,12 +17,14 @@
 package integration
 
 import (
+	"os"
 	"sync"
 
 	"github.com/coreos/etcd/clientv3"
 	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
 	"github.com/coreos/etcd/proxy/grpcproxy"
 	"github.com/coreos/etcd/proxy/grpcproxy/adapter"
+	"github.com/coreos/etcd/proxy/namespace"
 )
 
 var (
@@ -47,6 +49,11 @@ func toGRPC(c *clientv3.Client) grpcAPI {
 	kvp, kvpch := grpcproxy.NewKvProxy(c)
 	wp, wpch := grpcproxy.NewWatchProxy(c)
 	lp, lpch := grpcproxy.NewLeaseProxy(c)
+	if pfx := os.Getenv("PROXY_NAMESPACE"); len(pfx) != 0 {
+		kvp = namespace.NewKvProxy(kvp, pfx)
+		lp = namespace.NewLeaseProxy(lp, pfx)
+		wp = namespace.NewWatchProxy(wp, pfx)
+	}
 	grpc := grpcAPI{
 		pb.NewClusterClient(c.ActiveConnection()),
 		adapter.KvServerToKvClient(kvp),
