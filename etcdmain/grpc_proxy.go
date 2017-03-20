@@ -26,6 +26,7 @@ import (
 	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
 	"github.com/coreos/etcd/pkg/transport"
 	"github.com/coreos/etcd/proxy/grpcproxy"
+	"github.com/coreos/etcd/proxy/namespace"
 
 	"github.com/cockroachdb/cmux"
 	grpc_prometheus "github.com/grpc-ecosystem/go-grpc-prometheus"
@@ -35,14 +36,17 @@ import (
 )
 
 var (
-	grpcProxyListenAddr         string
-	grpcProxyEndpoints          []string
-	grpcProxyCert               string
-	grpcProxyKey                string
-	grpcProxyCA                 string
+	grpcProxyListenAddr string
+	grpcProxyEndpoints  []string
+	grpcProxyCert       string
+	grpcProxyKey        string
+	grpcProxyCA         string
+
 	grpcProxyAdvertiseClientURL string
 	grpcProxyResolverPrefix     string
 	grpcProxyResolverTTL        int
+
+	grpcProxyNamespacePrefix string
 )
 
 func init() {
@@ -75,6 +79,7 @@ func newGRPCProxyStartCommand() *cobra.Command {
 	cmd.Flags().StringVar(&grpcProxyAdvertiseClientURL, "advertise-client-url", "127.0.0.1:23790", "advertise address to register (must be reachable by client)")
 	cmd.Flags().StringVar(&grpcProxyResolverPrefix, "resolver-prefix", "", "prefix to use for registering proxy (must be shared with other grpc-proxy members)")
 	cmd.Flags().IntVar(&grpcProxyResolverTTL, "resolver-ttl", 0, "specify TTL, in seconds, when registering proxy endpoints")
+	cmd.Flags().StringVar(&grpcProxyNamespacePrefix, "namespace-prefix", "", "string to prefix to all keys to namespace requests")
 
 	return &cmd
 }
@@ -130,6 +135,12 @@ func startGRPCProxy(cmd *cobra.Command, args []string) {
 	leasep, _ := grpcproxy.NewLeaseProxy(client)
 	mainp := grpcproxy.NewMaintenanceProxy(client)
 	authp := grpcproxy.NewAuthProxy(client)
+
+	if len(grpcProxyNamespacePrefix) > 0 {
+		kvp = namespace.NewKVProxy(kvp)
+		leasep = namespace.NewLeaseProxy(leasep)
+		watchp = namespce.NewWatchProxy(watchp)
+	}
 
 	server := grpc.NewServer(
 		grpc.StreamInterceptor(grpc_prometheus.StreamServerInterceptor),
