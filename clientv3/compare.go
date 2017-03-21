@@ -82,6 +82,9 @@ func ModRevision(key string) Cmp {
 	return Cmp{Key: []byte(key), Target: pb.Compare_MOD}
 }
 
+func (cmp *Cmp) KeyBytes() []byte        { return cmp.Key }
+func (cmp *Cmp) WithKeyBytes(key []byte) { cmp.Key = key }
+
 func mustInt64(val interface{}) int64 {
 	if v, ok := val.(int64); ok {
 		return v

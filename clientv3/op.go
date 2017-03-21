@@ -69,6 +69,15 @@ type Op struct {
 	leaseID LeaseID
 }
 
+// accesors / mutators
+
+func (op Op) KeyBytes() []byte         { return op.key }
+func (op *Op) WithKeyBytes(key []byte) { op.key = key }
+func (op Op) EndBytes() []byte         { return op.end }
+func (op *Op) WithEndBytes(end []byte) { op.end = end }
+func (op Op) ValueBytes() []byte       { return op.val }
+func (op *Op) WithValueBytes(v []byte) { op.val = v }
+
 func (op Op) toRangeRequest() *pb.RangeRequest {
 	if op.t != tRange {
 		panic("op.t != tRange")
