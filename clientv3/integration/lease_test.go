@@ -682,3 +682,51 @@ func TestV3LeaseFailureOverlap(t *testing.T) {
 	mkReqs(4)
 	wg.Wait()
 }
+
+// TestLeaseWithRequireLeader checks keep-alive channel close when no leader.
+func TestLeaseWithRequireLeader(t *testing.T) {
+	defer testutil.AfterTest(t)
+
+	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 2})
+	defer clus.Terminate(t)
+
+	c := clus.Client(0)
+	lid1, err1 := c.Grant(context.TODO(), 60)
+	if err1 != nil {
+		t.Fatal(err1)
+	}
+	lid2, err2 := c.Grant(context.TODO(), 60)
+	if err2 != nil {
+		t.Fatal(err2)
+	}
+
+	kaReqLeader, err1 := c.KeepAlive(clientv3.WithRequireLeader(context.TODO()), lid1.ID)
+	if err1 != nil {
+		t.Fatal(err1)
+	}
+	kaNoLeader, err2 := c.KeepAlive(context.TODO(), lid2.ID)
+	if err2 != nil {
+		t.Fatal(err2)
+	}
+
+	<-kaReqLeader
+	<-kaNoLeader
+
+	clus.Members[1].Stop(t)
+
+	select {
+	case resp, ok := <-kaReqLeader:
+		if ok {
+			t.Fatalf("expected closed require leader, got response %+v", resp)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("keepalive with require leader took too long to close")
+	}
+	select {
+	case _, ok := <-kaNoLeader:
+		if !ok {
+			t.Fatalf("got closed channel with no require leader, expected non-closed")
+		}
+	default:
+	}
+}
