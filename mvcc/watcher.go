@@ -41,6 +41,8 @@ type WatchStream interface {
 	// The returned `id` is the ID of this watcher. It appears as WatchID
 	// in events that are sent to the created watcher through stream channel.
 	//
+	// If the watch can not be created because of compaction, -compactRevision
+	// is returned. If it can not be created because of bad arguments -1 is returned.
 	Watch(key, end []byte, startRev int64, fcs ...FilterFunc) WatchID
 
 	// Chan returns a chan. All watch response will be sent to the returned chan.
@@ -113,9 +115,11 @@ func (ws *watchStream) Watch(key, end []byte, startRev int64, fcs ...FilterFunc)
 	}
 
 	id := ws.nextID
+	w, c, cr := ws.watchable.watch(key, end, startRev, id, ws.ch, fcs...)
+	if w == nil {
+		return WatchID(-cr)
+	}
 	ws.nextID++
-
-	w, c := ws.watchable.watch(key, end, startRev, id, ws.ch, fcs...)
 
 	ws.cancels[id] = c
 	ws.watchers[id] = w

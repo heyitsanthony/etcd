@@ -234,13 +234,14 @@ func TestWatchCompacted(t *testing.T) {
 	for i := 0; i < maxRev; i++ {
 		s.Put(testKey, testValue, lease.NoLease)
 	}
+
+	w := s.NewWatchStream()
+	wt := w.Watch(testKey, nil, compactRev-1)
+
 	_, err := s.Compact(compactRev)
 	if err != nil {
 		t.Fatalf("failed to compact kv (%v)", err)
 	}
-
-	w := s.NewWatchStream()
-	wt := w.Watch(testKey, nil, compactRev-1)
 
 	select {
 	case resp := <-w.Chan():

@@ -35,7 +35,8 @@ const (
 )
 
 type watchable interface {
-	watch(key, end []byte, startRev int64, id WatchID, ch chan<- WatchResponse, fcs ...FilterFunc) (*watcher, cancelFunc)
+	// watch returns nil if revision is compacted.
+	watch(key, end []byte, startRev int64, id WatchID, ch chan<- WatchResponse, fcs ...FilterFunc) (*watcher, cancelFunc, int64)
 	progress(w *watcher)
 	rev() int64
 }
@@ -106,7 +107,7 @@ func (s *watchableStore) NewWatchStream() WatchStream {
 	}
 }
 
-func (s *watchableStore) watch(key, end []byte, startRev int64, id WatchID, ch chan<- WatchResponse, fcs ...FilterFunc) (*watcher, cancelFunc) {
+func (s *watchableStore) watch(key, end []byte, startRev int64, id WatchID, ch chan<- WatchResponse, fcs ...FilterFunc) (*watcher, cancelFunc, int64) {
 	wa := &watcher{
 		key:    key,
 		end:    end,
@@ -125,18 +126,24 @@ func (s *watchableStore) watch(key, end []byte, startRev int64, id WatchID, ch c
 			wa.minRev = startRev
 		}
 	}
-	if synced {
-		s.synced.add(wa)
-	} else {
-		slowWatcherGauge.Inc()
-		s.unsynced.add(wa)
+	compactRev := s.store.compactMainRev
+	if wa.minRev >= compactRev {
+		if synced {
+			s.synced.add(wa)
+		} else {
+			slowWatcherGauge.Inc()
+			s.unsynced.add(wa)
+		}
 	}
 	s.revMu.RUnlock()
 	s.mu.Unlock()
 
-	watcherGauge.Inc()
+	if wa.minRev < compactRev {
+		return nil, nil, compactRev
+	}
 
-	return wa, func() { s.cancelWatcher(wa) }
+	watcherGauge.Inc()
+	return wa, func() { s.cancelWatcher(wa) }, 0
 }
 
 // cancelWatcher removes references of the watcher from the watchableStore

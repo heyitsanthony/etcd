@@ -187,8 +187,10 @@ func (sws *serverWatchStream) recvLoop() error {
 			if rev == 0 {
 				rev = wsrev + 1
 			}
+
+			compactRev := int64(0)
 			id := sws.watchStream.Watch(creq.Key, creq.RangeEnd, rev, filters...)
-			if id != -1 {
+			if id >= 0 {
 				sws.mu.Lock()
 				if creq.ProgressNotify {
 					sws.progress[id] = true
@@ -197,12 +199,17 @@ func (sws *serverWatchStream) recvLoop() error {
 					sws.prevKV[id] = true
 				}
 				sws.mu.Unlock()
+			} else if id < -1 {
+				compactRev = int64(-id)
+				id = -1
 			}
+
 			wr := &pb.WatchResponse{
-				Header:   sws.newResponseHeader(wsrev),
-				WatchId:  int64(id),
-				Created:  true,
-				Canceled: id == -1,
+				Header:          sws.newResponseHeader(wsrev),
+				WatchId:         int64(id),
+				Created:         true,
+				CompactRevision: compactRev,
+				Canceled:        id == -1,
 			}
 			select {
 			case sws.ctrlStream <- wr:
