@@ -343,16 +343,45 @@ func putAndWatch(t *testing.T, wctx *watchctx, key, val string) {
 	}
 }
 
-// TestWatchResumeComapcted checks that the watcher gracefully closes in case
+func TestWatchResumeCompacted(t *testing.T) {
+	defer testutil.AfterTest(t)
+	testWatchResumeCompacted(t, nil, nil)
+}
+
+func TestWatchResumeCompactedFrequentDisconnect(t *testing.T) {
+	defer testutil.AfterTest(t)
+
+	ch := make(chan struct{})
+	f := func(clus *integration.ClusterV3) {
+		defer close(ch)
+		for {
+			select {
+			case <-ch:
+				return
+			case <-time.After(10 * time.Millisecond):
+				clus.Members[0].DropConnections()
+			}
+		}
+	}
+	waitf := func() {
+		ch <- struct{}{}
+		<-ch
+	}
+
+	testWatchResumeCompacted(t, f, waitf)
+}
+
+// testWatchResumeCompacted checks that the watcher gracefully closes in case
 // that it tries to resume to a revision that's been compacted out of the store.
 // Since the watcher's server restarts with stale data, the watcher will receive
 // either a compaction error or all keys by staying in sync before the compaction
 // is finally applied.
-func TestWatchResumeCompacted(t *testing.T) {
-	defer testutil.AfterTest(t)
-
+func testWatchResumeCompacted(t *testing.T, onResume func(*integration.ClusterV3), resumeDone func()) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 3})
 	defer clus.Terminate(t)
+	if resumeDone != nil {
+		defer resumeDone()
+	}
 
 	// create a waiting watcher at rev 1
 	w := clus.Client(0)
@@ -387,6 +416,9 @@ func TestWatchResumeCompacted(t *testing.T) {
 	}
 
 	clus.Members[0].Restart(t)
+	if onResume != nil {
+		go onResume(clus)
+	}
 
 	// since watch's server isn't guaranteed to be synced with the cluster when
 	// the watch resumes, there is a window where the watch can stay synced and
@@ -401,8 +433,8 @@ func TestWatchResumeCompacted(t *testing.T) {
 			if !ok {
 				t.Fatalf("expected wresp, but got closed channel")
 			}
-		case <-time.After(5 * time.Second):
-			t.Fatalf("compacted watch timed out")
+		case <-time.After(10 * time.Second):
+			testutil.FatalStack(t, "compacted watch timed out")
 		}
 		for _, ev := range wresp.Events {
 			if ev.Kv.ModRevision != wRev {
