@@ -340,6 +340,18 @@ func (w *watcher) closeStream(wgs *watchGrpcStream) {
 func (w *watchGrpcStream) addSubstream(resp *pb.WatchResponse, ws *watcherStream) {
 	if resp.WatchId == -1 {
 		// failed; no channel
+		if resp.CompactRevision != 0 {
+			// send compaction notification if possible
+			select {
+			case ws.outc <- WatchResponse{
+				Header:          *resp.Header,
+				CompactRevision: resp.CompactRevision,
+				Canceled:        true,
+				Created:         true,
+			}:
+			default:
+			}
+		}
 		close(ws.recvc)
 		return
 	}
