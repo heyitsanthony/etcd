@@ -24,6 +24,7 @@ import (
 	mvccpb "github.com/coreos/etcd/mvcc/mvccpb"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 )
 
 const (
@@ -65,6 +66,9 @@ type WatchResponse struct {
 	Created bool
 
 	closeErr error
+
+	// cancelReason is a reason of canceling watch
+	cancelReason string
 }
 
 // IsCreate returns true if the event tells that the key is newly created.
@@ -85,6 +89,9 @@ func (wr *WatchResponse) Err() error {
 	case wr.CompactRevision != 0:
 		return v3rpc.ErrCompacted
 	case wr.Canceled:
+		if len(wr.cancelReason) != 0 {
+			return v3rpc.Error(grpc.Errorf(codes.FailedPrecondition, "%s", wr.cancelReason))
+		}
 		return v3rpc.ErrFutureRev
 	}
 	return nil
@@ -456,11 +463,23 @@ func (w *watchGrpcStream) run() {
 					wc.Send(ws.initReq.toPB())
 				}
 			case pbresp.Canceled:
-				delete(cancelSet, pbresp.WatchId)
-				if ws, ok := w.substreams[pbresp.WatchId]; ok {
-					// signal to stream goroutine to update closingc
-					close(ws.recvc)
-					closing[ws] = struct{}{}
+				if len(pbresp.CancelReason) != 0 {
+					if 0 < len(w.resuming) {
+						if ws := w.resuming[0]; ws != nil {
+							dispatchCanceledEvent(pbresp, ws)
+							w.resuming[0] = nil
+						}
+						if ws := w.nextResume(); ws != nil {
+							wc.Send(ws.initReq.toPB())
+						}
+					}
+				} else {
+					delete(cancelSet, pbresp.WatchId)
+					if ws, ok := w.substreams[pbresp.WatchId]; ok {
+						// signal to stream goroutine to update closingc
+						close(ws.recvc)
+						closing[ws] = struct{}{}
+					}
 				}
 			default:
 				// dispatch to appropriate watch stream
@@ -518,23 +537,39 @@ func (w *watchGrpcStream) nextResume() *watcherStream {
 	return nil
 }
 
+func convertPbrespToWatchResponse(pbresp *pb.WatchResponse) *WatchResponse {
+	events := make([]*Event, len(pbresp.Events))
+	for i, ev := range pbresp.Events {
+		events[i] = (*Event)(ev)
+	}
+	return &WatchResponse{
+		Header:          *pbresp.Header,
+		Events:          events,
+		CompactRevision: pbresp.CompactRevision,
+		Created:         pbresp.Created,
+		Canceled:        pbresp.Canceled,
+		cancelReason:    pbresp.CancelReason,
+	}
+}
+
 // dispatchEvent sends a WatchResponse to the appropriate watcher stream
 func (w *watchGrpcStream) dispatchEvent(pbresp *pb.WatchResponse) bool {
 	ws, ok := w.substreams[pbresp.WatchId]
 	if !ok {
 		return false
 	}
-	events := make([]*Event, len(pbresp.Events))
-	for i, ev := range pbresp.Events {
-		events[i] = (*Event)(ev)
+	wr := convertPbrespToWatchResponse(pbresp)
+	select {
+	case ws.recvc <- wr:
+	case <-ws.donec:
+		return false
 	}
-	wr := &WatchResponse{
-		Header:          *pbresp.Header,
-		Events:          events,
-		CompactRevision: pbresp.CompactRevision,
-		Created:         pbresp.Created,
-		Canceled:        pbresp.Canceled,
-	}
+	return true
+}
+
+// dispatchCanceledEvent sends a canceled WatchResponse to the appropriate watcher stream
+func dispatchCanceledEvent(pbresp *pb.WatchResponse, ws *watcherStream) bool {
+	wr := convertPbrespToWatchResponse(pbresp)
 	select {
 	case ws.recvc <- wr:
 	case <-ws.donec:
@@ -605,7 +640,7 @@ func (w *watchGrpcStream) serveSubstream(ws *watcherStream, resumec chan struct{
 				return
 			}
 
-			if wr.Created {
+			if wr.Created || wr.Canceled {
 				if ws.initReq.retc != nil {
 					ws.initReq.retc <- ws.outc
 					// to prevent next write from taking the slot in buffered channel
