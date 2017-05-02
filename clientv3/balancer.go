@@ -15,6 +15,8 @@
 package clientv3
 
 import (
+	"fmt"
+
 	"net/url"
 	"strings"
 	"sync"
@@ -118,6 +120,7 @@ func getHost2ep(eps []string) map[string]string {
 }
 
 func (b *simpleBalancer) updateAddrs(eps []string) {
+	fmt.Printf("=== balancer %p update addrs %v\n", b, eps)
 	np := getHost2ep(eps)
 
 	b.mu.Lock()
@@ -189,15 +192,20 @@ func (b *simpleBalancer) updateNotifyLoop() {
 		switch {
 		case downc == nil && upc == nil:
 			// stale
+			fmt.Printf("%p: notify loop is stale\n", b)
 		case downc == nil:
+			fmt.Printf("%p: downc==nil, waiting...\n", b)
+			b.notifyAddrs()
 			select {
 			case <-upc:
+				fmt.Printf("%p: got upc close\n", b)
 			case <-b.updateAddrsC:
 				b.notifyAddrs()
 			case <-b.stopc:
 				return
 			}
 		case upc == nil:
+			fmt.Printf("%p: wait on downc..\n", b)
 			select {
 			// close connections that are not the pinned address
 			case b.notifyCh <- []grpc.Address{{Addr: addr}}:
@@ -207,12 +215,11 @@ func (b *simpleBalancer) updateNotifyLoop() {
 			}
 			select {
 			case <-downc:
-				b.notifyAddrs()
 			case <-b.updateAddrsC:
-				b.notifyAddrs()
 			case <-b.stopc:
 				return
 			}
+			b.notifyAddrs()
 		}
 	}
 }
@@ -221,6 +228,7 @@ func (b *simpleBalancer) notifyAddrs() {
 	b.mu.RLock()
 	addrs := b.addrs
 	b.mu.RUnlock()
+	fmt.Printf("%p: notifyc=%+v\n", b, addrs)
 	select {
 	case b.notifyCh <- addrs:
 	case <-b.stopc:
@@ -252,6 +260,7 @@ func (b *simpleBalancer) Up(addr grpc.Address) func(error) {
 	// notify client that a connection is up
 	b.readyOnce.Do(func() { close(b.readyc) })
 	return func(err error) {
+		fmt.Printf("%p: calling DOWN function\n", b)
 		b.mu.Lock()
 		b.upc = make(chan struct{})
 		close(b.downc)
