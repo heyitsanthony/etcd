@@ -371,8 +371,23 @@ type framer struct {
 	fr         *http2.Framer
 }
 
+type rReader struct {
+	r    io.Reader
+	conn net.Conn
+}
+
+func (rr *rReader) Read(p []byte) (int, error) {
+	n, err := rr.r.Read(p)
+	if err != nil {
+		fmt.Printf("WOOOOOOO conn=%p %v\n", rr.conn, err)
+	}
+	return n, err
+}
+
 func newFramer(conn net.Conn) *framer {
 	f := &framer{
+		// reader: &rReader{bufio.NewReaderSize(conn, http2IOBufSize), conn},
+
 		reader: bufio.NewReaderSize(conn, http2IOBufSize),
 		writer: bufio.NewWriterSize(conn, http2IOBufSize),
 	}

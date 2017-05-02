@@ -478,7 +478,7 @@ func TestKVNewAfterClose(t *testing.T) {
 		close(donec)
 	}()
 	select {
-	case <-time.After(3 * time.Second):
+	case <-time.After(20 * time.Second):
 		t.Fatal("kv.Get took too long")
 	case <-donec:
 	}

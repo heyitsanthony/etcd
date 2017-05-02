@@ -15,6 +15,7 @@
 package integration
 
 import (
+	"fmt"
 	"math/rand"
 	"testing"
 	"time"
@@ -96,6 +97,7 @@ func testDialSetEndpoints(t *testing.T, setBefore bool) {
 	defer cli.Close()
 
 	if setBefore {
+		fmt.Println("====== DOWNING ADDRESS", eps[toKill])
 		cli.SetEndpoints(eps[toKill%3], eps[(toKill+1)%3])
 	}
 	// make a dead node
@@ -105,7 +107,7 @@ func testDialSetEndpoints(t *testing.T, setBefore bool) {
 	if !setBefore {
 		cli.SetEndpoints(eps[toKill%3], eps[(toKill+1)%3])
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	if _, err = cli.Get(ctx, "foo", clientv3.WithSerializable()); err != nil {
 		t.Fatal(err)
 	}

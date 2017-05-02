@@ -244,6 +244,7 @@ func newHTTP2Client(ctx context.Context, addr TargetInfo, opts ConnectOptions) (
 	// Start the reader goroutine for incoming message. Each transport has
 	// a dedicated goroutine which reads HTTP2 frame from network. Then it
 	// dispatches the frame to the corresponding stream entity.
+	fmt.Printf("TRANSPORT %p LAUNCH READER %v\n", t, t.target)
 	go t.reader()
 	// Send connection preface to server.
 	n, err := t.conn.Write(clientPreface)
@@ -274,8 +275,10 @@ func newHTTP2Client(ctx context.Context, addr TargetInfo, opts ConnectOptions) (
 			return nil, connectionErrorf(true, err, "transport: %v", err)
 		}
 	}
+	fmt.Printf("TRANSPORT %p LAUNCH CONTROLLER %v\n", t, t.target)
 	go t.controller()
 	if t.kp.Time != infinity {
+		fmt.Printf("TRANSPORT %p LAUNCH KEEPALIVE %v\n", t, t.target)
 		go t.keepalive()
 	}
 	t.writableChan <- 0
@@ -567,6 +570,7 @@ func (t *http2Client) CloseStream(s *Stream, err error) {
 // only once on a transport. Once it is called, the transport should not be
 // accessed any more.
 func (t *http2Client) Close() (err error) {
+	fmt.Printf("TRANSPORT %p: closing %v\n", t, t.target)
 	t.mu.Lock()
 	if t.state == closing {
 		t.mu.Unlock()
@@ -603,6 +607,7 @@ func (t *http2Client) Close() (err error) {
 }
 
 func (t *http2Client) GracefulClose() error {
+	fmt.Printf("TRANSPORT %p: GRACEFUL CLOSE %v\n", t, t.target)
 	t.mu.Lock()
 	switch t.state {
 	case unreachable:
@@ -1020,23 +1025,32 @@ func handleMalformedHTTP2(s *Stream, err error) {
 // optimal.
 // TODO(zhaoq): Check the validity of the incoming frame sequence.
 func (t *http2Client) reader() {
+	defer func() {
+		fmt.Printf("TRANSPORT %p BYE reader %v\n", t, t.target)
+	}()
 	// Check the validity of server preface.
+	fmt.Printf("TRANSPORT %p conn=%p FIRSTREADFRAME\n", t, t.conn)
 	frame, err := t.framer.readFrame()
+	fmt.Printf("TRANSPORT %p reader000 %v (%v)\n", t, t.target, err)
 	if err != nil {
 		t.notifyError(err)
 		return
 	}
 	atomic.CompareAndSwapUint32(&t.activity, 0, 1)
 	sf, ok := frame.(*http2.SettingsFrame)
+	fmt.Printf("TRANSPORT %p reader111 %v (%v)\n", t, t.target, ok)
 	if !ok {
 		t.notifyError(err)
 		return
 	}
+	fmt.Printf("TRANSPORT %p eader SETTINGS %v\n", t, t.target)
 	t.handleSettings(sf)
 
 	// loop to keep reading incoming messages on this transport.
 	for {
+		fmt.Printf("TRANSPORT %p reader HANDLE FRAME %v\n", t, t.target)
 		frame, err := t.framer.readFrame()
+		fmt.Printf("TRANSPORT %p reader GOT FRAME %v (%v)\n", t, t.target, err)
 		atomic.CompareAndSwapUint32(&t.activity, 0, 1)
 		if err != nil {
 			// Abort an active stream if the http2.Framer returns a
@@ -1079,6 +1093,7 @@ func (t *http2Client) reader() {
 }
 
 func (t *http2Client) applySettings(ss []http2.Setting) {
+	fmt.Printf("TRANSPORT %p applying settings %v\n", t, t.target)
 	for _, s := range ss {
 		switch s.ID {
 		case http2.SettingMaxConcurrentStreams:
@@ -1108,7 +1123,11 @@ func (t *http2Client) applySettings(ss []http2.Setting) {
 // controller running in a separate goroutine takes charge of sending control
 // frames (e.g., window update, reset stream, setting, etc.) to the server.
 func (t *http2Client) controller() {
+	defer func() {
+		fmt.Printf("TRANSPORT %p BYE controller wait %v\n", t, t.target)
+	}()
 	for {
+		fmt.Printf("TRANSPORT %p controller wait %v\n", t, t.target)
 		select {
 		case i := <-t.controlBuf.get():
 			t.controlBuf.load()
@@ -1164,8 +1183,10 @@ func (t *http2Client) keepalive() {
 			// Check if keepalive should go dormant.
 			t.mu.Lock()
 			if len(t.activeStreams) < 1 && !t.kp.PermitWithoutStream {
+				fmt.Printf("TRANSPORT %p: wait on keepalive %v\n", t, t.target)
 				// Make awakenKeepalive writable.
 				<-t.awakenKeepalive
+				fmt.Printf("TRANSPORT %p: keepalive wait DONE %v\n", t, t.target)
 				t.mu.Unlock()
 				select {
 				case <-t.awakenKeepalive:
@@ -1214,6 +1235,7 @@ func (t *http2Client) GoAway() <-chan struct{} {
 }
 
 func (t *http2Client) notifyError(err error) {
+	fmt.Printf("TRANSPORT %p: notify error %v (%v)\n", t, t.target, err)
 	t.mu.Lock()
 	// make sure t.errorChan is closed only once.
 	if t.state == draining {

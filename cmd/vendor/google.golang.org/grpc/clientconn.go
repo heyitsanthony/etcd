@@ -813,7 +813,7 @@ func (ac *addrConn) resetTransport(closeTransport bool) error {
 			if e, ok := err.(transport.ConnectionError); ok && !e.Temporary() {
 				return err
 			}
-			grpclog.Printf("grpc: addrConn.resetTransport failed to create client transport: %v; Reconnecting to %v", err, ac.addr)
+			grpclog.Printf("grpc: addrConn.resetTransport failed to create client transport: %v; Reconnecting to %v (balancer: %p)", err, ac.addr, ac.cc.dopts.balancer)
 			ac.mu.Lock()
 			if ac.state == Shutdown {
 				// ac.tearDown(...) has been invoked.
@@ -852,6 +852,7 @@ func (ac *addrConn) resetTransport(closeTransport bool) error {
 			ac.ready = nil
 		}
 		if ac.cc.dopts.balancer != nil {
+			fmt.Printf("balancer %p got UP on transport %p (%v)\n", ac.cc.dopts.balancer, newTransport, ac.addr)
 			ac.down = ac.cc.dopts.balancer.Up(ac.addr)
 		}
 		ac.mu.Unlock()
