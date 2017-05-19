@@ -207,6 +207,7 @@ func (sws *serverWatchStream) recvLoop() error {
 					Header:       sws.newResponseHeader(sws.watchStream.Rev()),
 					WatchId:      -1,
 					Canceled:     true,
+					Created:      true,
 					CancelReason: rpctypes.ErrGRPCPermissionDenied.Error(),
 				}
 
