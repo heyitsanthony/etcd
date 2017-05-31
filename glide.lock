@@ -1,5 +1,5 @@
-hash: cee1f2629857e9c2384ad89ff6014db09498c9af53771e5144ad3a4b510ff00e
-updated: 2017-05-30T10:29:08.22609283-07:00
+hash: 1a0fc9171b85b2b4ce02d790661b37e0310790b8ffcbc94ad85584b912e81a9f
+updated: 2017-05-31T12:13:29.984244169-07:00
 imports:
 - name: github.com/beorn7/perks
   version: 4c0e84591b9aa9e6dcfdf3e020114cd81f89d5f9
@@ -37,7 +37,7 @@ imports:
 - name: github.com/ghodss/yaml
   version: 0ca9ea5df5451ffdf184b4428c902747c2c11cd7
 - name: github.com/gogo/protobuf
-  version: 909568be09de550ed094403c2bf8a261b5bb730a
+  version: 100ba4e885062801d56799d78530b73b178a78f3
   subpackages:
   - proto
 - name: github.com/golang/groupcache
