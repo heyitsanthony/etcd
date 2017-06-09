@@ -25,7 +25,6 @@ import (
 	"time"
 
 	"github.com/coreos/etcd/clientv3"
-	"github.com/coreos/etcd/etcdserver/api/v3rpc"
 	"github.com/coreos/etcd/etcdserver/api/v3rpc/rpctypes"
 	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
 	"github.com/coreos/etcd/pkg/testutil"
@@ -150,7 +149,8 @@ func TestV3CompactCurrentRev(t *testing.T) {
 
 func TestV3TxnTooManyOps(t *testing.T) {
 	defer testutil.AfterTest(t)
-	clus := NewClusterV3(t, &ClusterConfig{Size: 3})
+	maxTxnOps := uint(128)
+	clus := NewClusterV3(t, &ClusterConfig{Size: 3, MaxTxnOps: maxTxnOps})
 	defer clus.Terminate(t)
 
 	kvc := toGRPC(clus.RandClient()).KV
@@ -201,7 +201,7 @@ func TestV3TxnTooManyOps(t *testing.T) {
 
 	for i, tt := range tests {
 		txn := &pb.TxnRequest{}
-		for j := 0; j < v3rpc.MaxOpsPerTxn+1; j++ {
+		for j := 0; j < int(maxTxnOps+1); j++ {
 			tt(txn)
 		}
 
@@ -1402,9 +1402,9 @@ func TestTLSReloadAtomicReplace(t *testing.T) {
 	defer os.RemoveAll(certsDirExp)
 
 	cloneFunc := func() transport.TLSInfo {
-		tlsInfo, err := copyTLSFiles(testTLSInfo, certsDir)
-		if err != nil {
-			t.Fatal(err)
+		tlsInfo, terr := copyTLSFiles(testTLSInfo, certsDir)
+		if terr != nil {
+			t.Fatal(terr)
 		}
 		if _, err = copyTLSFiles(testTLSInfoExpired, certsDirExp); err != nil {
 			t.Fatal(err)
@@ -1448,9 +1448,9 @@ func TestTLSReloadCopy(t *testing.T) {
 	defer os.RemoveAll(certsDir)
 
 	cloneFunc := func() transport.TLSInfo {
-		tlsInfo, err := copyTLSFiles(testTLSInfo, certsDir)
-		if err != nil {
-			t.Fatal(err)
+		tlsInfo, terr := copyTLSFiles(testTLSInfo, certsDir)
+		if terr != nil {
+			t.Fatal(terr)
 		}
 		return tlsInfo
 	}
@@ -1622,6 +1622,35 @@ func TestGRPCStreamRequireLeader(t *testing.T) {
 	err = wStream.Send(wreq)
 	if err != nil {
 		t.Errorf("err = %v, want nil", err)
+	}
+}
+
+// TestV3PutLargeRequests ensures that configurable MaxRequestBytes works as intended.
+func TestV3PutLargeRequests(t *testing.T) {
+	defer testutil.AfterTest(t)
+	tests := []struct {
+		key             string
+		maxRequestBytes uint
+		valueSize       int
+		expectError     error
+	}{
+		// don't set to 0. use 0 as the default.
+		{"foo", 1, 1024, rpctypes.ErrGRPCRequestTooLarge},
+		{"foo", 10 * 1024 * 1024, 9 * 1024 * 1024, nil},
+		{"foo", 10 * 1024 * 1024, 10 * 1024 * 1024, rpctypes.ErrGRPCRequestTooLarge},
+		{"foo", 10 * 1024 * 1024, 10*1024*1024 + 5, rpctypes.ErrGRPCRequestTooLarge},
+	}
+	for i, test := range tests {
+		clus := NewClusterV3(t, &ClusterConfig{Size: 1, MaxRequestBytes: test.maxRequestBytes})
+		kvcli := toGRPC(clus.Client(0)).KV
+		reqput := &pb.PutRequest{Key: []byte(test.key), Value: make([]byte, test.valueSize)}
+		_, err := kvcli.Put(context.TODO(), reqput)
+
+		if !eqErrGRPC(err, test.expectError) {
+			t.Errorf("#%d: expected error %v, got %v", i, test.expectError, err)
+		}
+
+		clus.Terminate(t)
 	}
 }
 

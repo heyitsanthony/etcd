@@ -40,7 +40,7 @@
 
 **Python libraries**
 
-- [kragniz/python-etcd3](https://github.com/kragniz/python-etcd3) - Work in progress client for v3
+- [kragniz/python-etcd3](https://github.com/kragniz/python-etcd3) - Client for v3
 - [jplana/python-etcd](https://github.com/jplana/python-etcd) - Supports v2
 - [russellhaering/txetcd](https://github.com/russellhaering/txetcd) - a Twisted Python library
 - [cholcombe973/autodock](https://github.com/cholcombe973/autodock) - A docker deployment automation tool
@@ -50,6 +50,7 @@
 
 **Node libraries**
 
+- [mixer/etcd3](https://github.com/mixer/etcd3) - Supports v3
 - [stianeikeland/node-etcd](https://github.com/stianeikeland/node-etcd) - Supports v2 (w Coffeescript)
 - [lavagetto/nodejs-etcd](https://github.com/lavagetto/nodejs-etcd) - Supports v2
 - [deedubs/node-etcd-config](https://github.com/deedubs/node-etcd-config) - Supports v2

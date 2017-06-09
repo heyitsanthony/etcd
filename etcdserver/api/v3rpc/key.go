@@ -27,19 +27,20 @@ import (
 
 var (
 	plog = capnslog.NewPackageLogger("github.com/coreos/etcd", "etcdserver/api/v3rpc")
-
-	// Max operations per txn list. For example, Txn.Success can have at most 128 operations,
-	// and Txn.Failure can have at most 128 operations.
-	MaxOpsPerTxn = 128
 )
 
 type kvServer struct {
 	hdr header
 	kv  etcdserver.RaftKV
+	// maxTxnOps is the max operations per txn.
+	// e.g suppose maxTxnOps = 128.
+	// Txn.Success can have at most 128 operations,
+	// and Txn.Failure can have at most 128 operations.
+	maxTxnOps uint
 }
 
 func NewKVServer(s *etcdserver.EtcdServer) pb.KVServer {
-	return &kvServer{hdr: newHeader(s), kv: s}
+	return &kvServer{hdr: newHeader(s), kv: s, maxTxnOps: s.Cfg.MaxTxnOps}
 }
 
 func (s *kvServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeResponse, error) {
@@ -52,9 +53,6 @@ func (s *kvServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeResp
 		return nil, togRPCError(err)
 	}
 
-	if resp.Header == nil {
-		plog.Panic("unexpected nil resp.Header")
-	}
 	s.hdr.fill(resp.Header)
 	return resp, nil
 }
@@ -69,9 +67,6 @@ func (s *kvServer) Put(ctx context.Context, r *pb.PutRequest) (*pb.PutResponse, 
 		return nil, togRPCError(err)
 	}
 
-	if resp.Header == nil {
-		plog.Panic("unexpected nil resp.Header")
-	}
 	s.hdr.fill(resp.Header)
 	return resp, nil
 }
@@ -86,15 +81,12 @@ func (s *kvServer) DeleteRange(ctx context.Context, r *pb.DeleteRangeRequest) (*
 		return nil, togRPCError(err)
 	}
 
-	if resp.Header == nil {
-		plog.Panic("unexpected nil resp.Header")
-	}
 	s.hdr.fill(resp.Header)
 	return resp, nil
 }
 
 func (s *kvServer) Txn(ctx context.Context, r *pb.TxnRequest) (*pb.TxnResponse, error) {
-	if err := checkTxnRequest(r); err != nil {
+	if err := checkTxnRequest(r, int(s.maxTxnOps)); err != nil {
 		return nil, err
 	}
 
@@ -103,9 +95,6 @@ func (s *kvServer) Txn(ctx context.Context, r *pb.TxnRequest) (*pb.TxnResponse, 
 		return nil, togRPCError(err)
 	}
 
-	if resp.Header == nil {
-		plog.Panic("unexpected nil resp.Header")
-	}
 	s.hdr.fill(resp.Header)
 	return resp, nil
 }
@@ -116,9 +105,6 @@ func (s *kvServer) Compact(ctx context.Context, r *pb.CompactionRequest) (*pb.Co
 		return nil, togRPCError(err)
 	}
 
-	if resp.Header == nil {
-		plog.Panic("unexpected nil resp.Header")
-	}
 	s.hdr.fill(resp.Header)
 	return resp, nil
 }
@@ -150,8 +136,8 @@ func checkDeleteRequest(r *pb.DeleteRangeRequest) error {
 	return nil
 }
 
-func checkTxnRequest(r *pb.TxnRequest) error {
-	if len(r.Compare) > MaxOpsPerTxn || len(r.Success) > MaxOpsPerTxn || len(r.Failure) > MaxOpsPerTxn {
+func checkTxnRequest(r *pb.TxnRequest, maxTxnOps int) error {
+	if len(r.Compare) > maxTxnOps || len(r.Success) > maxTxnOps || len(r.Failure) > maxTxnOps {
 		return rpctypes.ErrGRPCTooManyOps
 	}
 
@@ -252,8 +238,8 @@ func checkRequestOp(u *pb.RequestOp) error {
 			return checkDeleteRequest(uv.RequestDeleteRange)
 		}
 	default:
-		// empty op
-		return nil
+		// empty op / nil entry
+		return rpctypes.ErrGRPCKeyNotFound
 	}
 	return nil
 }

@@ -49,7 +49,6 @@ func runElectionFunc(cmd *cobra.Command, args []string) {
 	// nextc closes when election is ready for next round.
 	nextc := make(chan struct{})
 	eps := endpointsFromFlag(cmd)
-	dialTimeout := dialTimeoutFromCmd(cmd)
 
 	for i := range rcs {
 		v := fmt.Sprintf("%d", i)
@@ -89,14 +88,14 @@ func runElectionFunc(cmd *cobra.Command, args []string) {
 				}
 			}()
 			err = e.Campaign(ctx, v)
+			cancel()
+			<-donec
 			if err == nil {
 				observedLeader = v
 			}
 			if observedLeader == v {
 				validateWaiters = len(rcs)
 			}
-			cancel()
-			<-donec
 			select {
 			case <-ctx.Done():
 				return nil
@@ -129,8 +128,10 @@ func runElectionFunc(cmd *cobra.Command, args []string) {
 				return err
 			}
 			if observedLeader == v {
-				close(nextc)
+				oldNextc := nextc
 				nextc = make(chan struct{})
+				close(oldNextc)
+
 			}
 			<-rcNextc
 			observedLeader = ""

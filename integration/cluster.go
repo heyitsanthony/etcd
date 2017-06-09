@@ -36,6 +36,7 @@ import (
 
 	"github.com/coreos/etcd/client"
 	"github.com/coreos/etcd/clientv3"
+	"github.com/coreos/etcd/embed"
 	"github.com/coreos/etcd/etcdserver"
 	"github.com/coreos/etcd/etcdserver/api/v2http"
 	"github.com/coreos/etcd/etcdserver/api/v3client"
@@ -93,6 +94,8 @@ type ClusterConfig struct {
 	DiscoveryURL      string
 	UseGRPC           bool
 	QuotaBackendBytes int64
+	MaxTxnOps         uint
+	MaxRequestBytes   uint
 }
 
 type cluster struct {
@@ -224,6 +227,8 @@ func (c *cluster) mustNewMember(t *testing.T) *member {
 			peerTLS:           c.cfg.PeerTLS,
 			clientTLS:         c.cfg.ClientTLS,
 			quotaBackendBytes: c.cfg.QuotaBackendBytes,
+			maxTxnOps:         c.cfg.MaxTxnOps,
+			maxRequestBytes:   c.cfg.MaxRequestBytes,
 		})
 	m.DiscoveryURL = c.cfg.DiscoveryURL
 	if c.cfg.UseGRPC {
@@ -490,6 +495,8 @@ type memberConfig struct {
 	peerTLS           *transport.TLSInfo
 	clientTLS         *transport.TLSInfo
 	quotaBackendBytes int64
+	maxTxnOps         uint
+	maxRequestBytes   uint
 }
 
 // mustNewMember return an inited member with the given name. If peerTLS is
@@ -537,6 +544,14 @@ func mustNewMember(t *testing.T, mcfg memberConfig) *member {
 	m.ElectionTicks = electionTicks
 	m.TickMs = uint(tickDuration / time.Millisecond)
 	m.QuotaBackendBytes = mcfg.quotaBackendBytes
+	m.MaxTxnOps = mcfg.maxTxnOps
+	if m.MaxTxnOps == 0 {
+		m.MaxTxnOps = embed.DefaultMaxTxnOps
+	}
+	m.MaxRequestBytes = mcfg.maxRequestBytes
+	if m.MaxRequestBytes == 0 {
+		m.MaxRequestBytes = embed.DefaultMaxRequestBytes
+	}
 	m.AuthToken = "simple" // for the purpose of integration testing, simple token is enough
 	return m
 }
@@ -554,7 +569,7 @@ func (m *member) listenGRPC() error {
 		l.Close()
 		return err
 	}
-	m.grpcAddr = m.grpcBridge.URL()
+	m.grpcAddr = schemeFromTLSInfo(m.ClientTLSInfo) + "://" + m.grpcBridge.inaddr
 	m.grpcListener = l
 	return nil
 }
@@ -935,4 +950,8 @@ type grpcAPI struct {
 	Maintenance pb.MaintenanceClient
 	// Auth is the authentication API for the client's connection.
 	Auth pb.AuthClient
+	// Lock is the lock API for the client's connection.
+	Lock lockpb.LockClient
+	// Election is the election API for the client's connection.
+	Election epb.ElectionClient
 }

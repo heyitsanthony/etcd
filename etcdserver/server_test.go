@@ -20,6 +20,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -29,6 +30,7 @@ import (
 	"github.com/coreos/etcd/lease"
 	"github.com/coreos/etcd/mvcc"
 	"github.com/coreos/etcd/mvcc/backend"
+	"github.com/coreos/etcd/pkg/fileutil"
 	"github.com/coreos/etcd/pkg/idutil"
 	"github.com/coreos/etcd/pkg/mock/mockstorage"
 	"github.com/coreos/etcd/pkg/mock/mockstore"
@@ -40,6 +42,7 @@ import (
 	"github.com/coreos/etcd/raft"
 	"github.com/coreos/etcd/raft/raftpb"
 	"github.com/coreos/etcd/rafthttp"
+	"github.com/coreos/etcd/snap"
 	"github.com/coreos/etcd/store"
 	"golang.org/x/net/context"
 )
@@ -951,6 +954,82 @@ func TestSnapshot(t *testing.T) {
 	<-ch
 }
 
+// TestSnapshotOrdering ensures raft persists snapshot onto disk before
+// snapshot db is applied.
+func TestSnapshotOrdering(t *testing.T) {
+	n := newNopReadyNode()
+	st := store.New()
+	cl := membership.NewCluster("abc")
+	cl.SetStore(st)
+
+	testdir, err := ioutil.TempDir(os.TempDir(), "testsnapdir")
+	if err != nil {
+		t.Fatalf("couldn't open tempdir (%v)", err)
+	}
+	defer os.RemoveAll(testdir)
+
+	snapdir := filepath.Join(testdir, "member", "snap")
+	if err := os.MkdirAll(snapdir, 0755); err != nil {
+		t.Fatalf("couldn't make snap dir (%v)", err)
+	}
+
+	rs := raft.NewMemoryStorage()
+	p := mockstorage.NewStorageRecorderStream(testdir)
+	tr, snapDoneC := rafthttp.NewSnapTransporter(snapdir)
+	r := newRaftNode(raftNodeConfig{
+		isIDRemoved: func(id uint64) bool { return cl.IsIDRemoved(types.ID(id)) },
+		Node:        n,
+		transport:   tr,
+		storage:     p,
+		raftStorage: rs,
+	})
+	s := &EtcdServer{
+		Cfg: &ServerConfig{
+			DataDir: testdir,
+		},
+		r:           *r,
+		store:       st,
+		snapshotter: snap.New(snapdir),
+		cluster:     cl,
+		SyncTicker:  &time.Ticker{},
+	}
+	s.applyV2 = &applierV2store{store: s.store, cluster: s.cluster}
+
+	be, tmpPath := backend.NewDefaultTmpBackend()
+	defer os.RemoveAll(tmpPath)
+	s.kv = mvcc.New(be, &lease.FakeLessor{}, &s.consistIndex)
+	s.be = be
+
+	s.start()
+	defer s.Stop()
+
+	n.readyc <- raft.Ready{Messages: []raftpb.Message{{Type: raftpb.MsgSnap}}}
+	go func() {
+		// get the snapshot sent by the transport
+		snapMsg := <-snapDoneC
+		// Snapshot first triggers raftnode to persists the snapshot onto disk
+		// before renaming db snapshot file to db
+		snapMsg.Snapshot.Metadata.Index = 1
+		n.readyc <- raft.Ready{Snapshot: snapMsg.Snapshot}
+	}()
+
+	if ac := <-p.Chan(); ac.Name != "Save" {
+		t.Fatalf("expected Save, got %+v", ac)
+	}
+	if ac := <-p.Chan(); ac.Name != "Save" {
+		t.Fatalf("expected Save, got %+v", ac)
+	}
+	// confirm snapshot file still present before calling SaveSnap
+	snapPath := filepath.Join(snapdir, fmt.Sprintf("%016x.snap.db", 1))
+	if !fileutil.Exist(snapPath) {
+		t.Fatalf("expected file %q, got missing", snapPath)
+	}
+	// unblock SaveSnapshot, etcdserver now permitted to move snapshot file
+	if ac := <-p.Chan(); ac.Name != "SaveSnap" {
+		t.Fatalf("expected SaveSnap, got %+v", ac)
+	}
+}
+
 // Applied > SnapCount should trigger a SaveSnap event
 func TestTriggerSnap(t *testing.T) {
 	be, tmpPath := backend.NewDefaultTmpBackend()
@@ -1036,10 +1115,11 @@ func TestConcurrentApplyAndSnapshotV3(t *testing.T) {
 		Cfg: &ServerConfig{
 			DataDir: testdir,
 		},
-		r:          *r,
-		store:      st,
-		cluster:    cl,
-		SyncTicker: &time.Ticker{},
+		r:           *r,
+		store:       st,
+		snapshotter: snap.New(testdir),
+		cluster:     cl,
+		SyncTicker:  &time.Ticker{},
 	}
 	s.applyV2 = &applierV2store{store: s.store, cluster: s.cluster}
 

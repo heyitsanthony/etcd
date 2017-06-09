@@ -54,6 +54,10 @@ type ServerConfig struct {
 
 	AutoCompactionRetention int
 	QuotaBackendBytes       int64
+	MaxTxnOps               uint
+
+	// MaxRequestBytes is the maximum request size to send over raft.
+	MaxRequestBytes uint
 
 	StrictReconfigCheck bool
 
@@ -200,3 +204,5 @@ func (c *ServerConfig) bootstrapTimeout() time.Duration {
 	}
 	return time.Second
 }
+
+func (c *ServerConfig) backendPath() string { return filepath.Join(c.SnapDir(), "db") }
