@@ -15,27 +15,20 @@
 package auth
 
 import (
+	"sync"
+
 	"github.com/coreos/etcd/auth/authpb"
-	"github.com/coreos/etcd/mvcc/backend"
 	"github.com/coreos/etcd/pkg/adt"
 )
 
-func getMergedPerms(tx backend.BatchTx, userName string) *unifiedRangePermissions {
-	user := getUser(tx, userName)
-	if user == nil {
-		plog.Errorf("invalid user name %s", userName)
-		return nil
-	}
+type unifiedRangePermissions struct {
+	readPerms  *adt.IntervalTree
+	writePerms *adt.IntervalTree
+}
 
-	readPerms := &adt.IntervalTree{}
-	writePerms := &adt.IntervalTree{}
-
-	for _, roleName := range user.Roles {
-		role := getRole(tx, roleName)
-		if role == nil {
-			continue
-		}
-
+func getMergedRolePerms(roles []*authpb.Role) *unifiedRangePermissions {
+	readPerms, writePerms := &adt.IntervalTree{}, &adt.IntervalTree{}
+	for _, role := range roles {
 		for _, perm := range role.KeyPermission {
 			var ivl adt.Interval
 			var rangeEnd []byte
@@ -54,16 +47,13 @@ func getMergedPerms(tx backend.BatchTx, userName string) *unifiedRangePermission
 			case authpb.READWRITE:
 				readPerms.Insert(ivl, struct{}{})
 				writePerms.Insert(ivl, struct{}{})
-
 			case authpb.READ:
 				readPerms.Insert(ivl, struct{}{})
-
 			case authpb.WRITE:
 				writePerms.Insert(ivl, struct{}{})
 			}
 		}
 	}
-
 	return &unifiedRangePermissions{
 		readPerms:  readPerms,
 		writePerms: writePerms,
@@ -100,34 +90,49 @@ func checkKeyPoint(cachedPerms *unifiedRangePermissions, key []byte, permtyp aut
 	return false
 }
 
-func (as *authStore) isRangeOpPermitted(tx backend.BatchTx, userName string, key, rangeEnd []byte, permtyp authpb.Permission_Type) bool {
-	// assumption: tx is Lock()ed
-	_, ok := as.rangePermCache[userName]
+type rangeChecker struct {
+	mu        sync.RWMutex
+	permCache map[string]*unifiedRangePermissions // keyed by username
+}
+
+func NewRangeChecker() *rangeChecker {
+	return &rangeChecker{
+		permCache: make(map[string]*unifiedRangePermissions),
+	}
+}
+
+func (rc *rangeChecker) Clear() {
+	rc.permCache = make(map[string]*unifiedRangePermissions)
+}
+
+func (rc *rangeChecker) Invalidate(user string) {
+	delete(rc.permCache, user)
+}
+
+func (rc *rangeChecker) IsPermitted(ar AuthReader, userName string, key, rangeEnd []byte, permtyp authpb.Permission_Type) bool {
+	rc.mu.RLock()
+	perms, ok := rc.permCache[userName]
+	rc.mu.RUnlock()
 	if !ok {
-		perms := getMergedPerms(tx, userName)
-		if perms == nil {
-			plog.Errorf("failed to create a unified permission of user %s", userName)
+		user := ar.User(userName)
+		if user == nil {
+			plog.Errorf("failed unifying permissions for invalid user %s", userName)
 			return false
 		}
-		as.rangePermCache[userName] = perms
+		var roles []*authpb.Role
+		for _, roleName := range user.Roles {
+			if role := ar.Role(roleName); role != nil {
+				roles = append(roles, role)
+			}
+		}
+		perms = getMergedRolePerms(roles)
+		rc.mu.Lock()
+		rc.permCache[userName] = perms
+		rc.mu.Unlock()
 	}
 
 	if len(rangeEnd) == 0 {
-		return checkKeyPoint(as.rangePermCache[userName], key, permtyp)
+		return checkKeyPoint(perms, key, permtyp)
 	}
-
-	return checkKeyInterval(as.rangePermCache[userName], key, rangeEnd, permtyp)
-}
-
-func (as *authStore) clearCachedPerm() {
-	as.rangePermCache = make(map[string]*unifiedRangePermissions)
-}
-
-func (as *authStore) invalidateCachedPerm(userName string) {
-	delete(as.rangePermCache, userName)
-}
-
-type unifiedRangePermissions struct {
-	readPerms  *adt.IntervalTree
-	writePerms *adt.IntervalTree
+	return checkKeyInterval(perms, key, rangeEnd, permtyp)
 }
