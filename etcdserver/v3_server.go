@@ -322,6 +322,15 @@ func (s *EtcdServer) waitLeader(ctx context.Context) (*membership.Member, error)
 	return leader, nil
 }
 
+func (s *EtcdServer) Rollback(ctx context.Context, r *pb.RollbackRequest) (*pb.RollbackResponse, error) {
+	// check if current cluster can be rolled back
+	resp, err := s.raftRequestOnce(ctx, pb.InternalRaftRequest{Rollback: r})
+	if err != nil {
+		return nil, err
+	}
+	return resp.(*pb.RollbackResponse), nil
+}
+
 func (s *EtcdServer) Alarm(ctx context.Context, r *pb.AlarmRequest) (*pb.AlarmResponse, error) {
 	resp, err := s.raftRequestOnce(ctx, pb.InternalRaftRequest{Alarm: r})
 	if err != nil {

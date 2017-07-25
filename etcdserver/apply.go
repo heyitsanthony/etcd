@@ -57,6 +57,8 @@ type applierV3 interface {
 
 	Alarm(*pb.AlarmRequest) (*pb.AlarmResponse, error)
 
+	Rollback(*pb.RollbackRequest) (*pb.RollbackResponse, error)
+
 	Authenticate(r *pb.InternalAuthenticateRequest) (*pb.AuthenticateResponse, error)
 
 	AuthEnable() (*pb.AuthEnableResponse, error)
@@ -126,6 +128,8 @@ func (a *applierV3backend) Apply(r *pb.InternalRaftRequest) *applyResult {
 		ar.resp, ar.err = a.s.applyV3.LeaseRevoke(r.LeaseRevoke)
 	case r.Alarm != nil:
 		ar.resp, ar.err = a.s.applyV3.Alarm(r.Alarm)
+	case r.Rollback != nil:
+		ar.resp, ar.err = a.s.applyV3.Rollback(r.Rollback)
 	case r.Authenticate != nil:
 		ar.resp, ar.err = a.s.applyV3.Authenticate(r.Authenticate)
 	case r.AuthEnable != nil:
@@ -634,6 +638,10 @@ func (a *applierV3Capped) Txn(r *pb.TxnRequest) (*pb.TxnResponse, error) {
 
 func (a *applierV3Capped) LeaseGrant(lc *pb.LeaseGrantRequest) (*pb.LeaseGrantResponse, error) {
 	return nil, ErrNoSpace
+}
+
+func (a *applierV3backend) Rollback(r *pb.RollbackRequest) (*pb.RollbackResponse, error) {
+	panic("hi")
 }
 
 func (a *applierV3backend) AuthEnable() (*pb.AuthEnableResponse, error) {
