@@ -1,243 +1,282 @@
 package leasing
 
 import (
+	"strings"
 	"sync"
 	"time"
 
 	v3 "github.com/coreos/etcd/clientv3"
-	"github.com/coreos/etcd/clientv3/concurrency"
-	server "github.com/coreos/etcd/etcdserver/etcdserverpb"
+	v3pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
 	"github.com/coreos/etcd/mvcc/mvccpb"
 	"golang.org/x/net/context"
 )
 
+const revokeBackoff = 2 * time.Second
+
 type leaseCache struct {
-	monitorRevocation map[string]time.Time
-	entries           map[string]*leaseInfo
-	mu                sync.Mutex
-	flag              int
+	mu      sync.RWMutex
+	entries map[string]*leaseKey
+	revokes map[string]time.Time
+	header  *v3pb.ResponseHeader
 }
 
-type leaseInfo struct {
-	waitc    chan struct{}
+type leaseKey struct {
 	response *v3.GetResponse
-	revision int64
+	// rev is the leasing key revision.
+	rev   int64
+	waitc chan struct{}
 }
 
-func (lc *leaseCache) checkInCache(key string) *leaseInfo {
-	lc.mu.Lock()
-	defer lc.mu.Unlock()
-	return lc.entries[key]
+func (lc *leaseCache) Rev(key string) int64 {
+	lc.mu.RLock()
+	defer lc.mu.RUnlock()
+	if li := lc.entries[key]; li != nil {
+		return li.rev
+	}
+	return 0
 }
 
-func (lc *leaseCache) deleteKeyInCache(key string) {
+func (lc *leaseCache) Lock(key string) (chan<- struct{}, int64) {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
 	if li := lc.entries[key]; li != nil {
-		delete(lc.entries, key)
-	}
-}
-
-func (lc *leaseCache) openWaitChannel(key string) (chan struct{}, int64) {
-	li := lc.checkInCache(key)
-	if li != nil {
-		lc.mu.Lock()
 		li.waitc = make(chan struct{})
-		wc, rev := li.waitc, li.revision
-		lc.mu.Unlock()
-		return wc, rev
+		return li.waitc, li.rev
 	}
 	return nil, 0
 }
 
-func (lc *leaseCache) updateResp(key, val string, respHeader *server.ResponseHeader) {
+func (lc *leaseCache) LockRange(begin, end string) (ret []chan<- struct{}) {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
-	mapResp := lc.entries[key].response
-	if len(mapResp.Kvs) == 0 {
-		myKV := &mvccpb.KeyValue{
-			Value:   []byte(val),
-			Key:     []byte(key),
-			Version: 0,
+	for k, li := range lc.entries {
+		if inRange(k, begin, end) {
+			li.waitc = make(chan struct{})
+			ret = append(ret, li.waitc)
 		}
-		mapResp.Kvs, mapResp.More, mapResp.Count = append(mapResp.Kvs, myKV), false, 1
-		mapResp.Kvs[0].CreateRevision = respHeader.Revision
 	}
-	if mapResp.Kvs[0].ModRevision < respHeader.Revision {
-		mapResp.Header, mapResp.Kvs[0].Value = respHeader, []byte(val)
-		mapResp.Kvs[0].ModRevision = respHeader.Revision
-	}
-	mapResp.Kvs[0].Version++
+	return ret
 }
 
-const (
-	leasingRevokeBackoff time.Duration = time.Second * time.Duration(2)
-)
+func inRange(k, begin, end string) bool {
+	if strings.Compare(k, begin) < 0 {
+		return false
+	}
+	if end != "\x00" && strings.Compare(k, end) >= 0 {
+		return false
+	}
+	return true
+}
 
-func (lc *leaseCache) trackRevokedLK(key string) {
+func (lc *leaseCache) LockWriteOps(ops []v3.Op) (ret []chan<- struct{}) {
+	for _, op := range ops {
+		if op.IsGet() {
+			continue
+		}
+		key := string(op.KeyBytes())
+		if end := string(op.RangeBytes()); end == "" {
+			if wc, _ := lc.Lock(key); wc != nil {
+				ret = append(ret, wc)
+			}
+		} else {
+			for k := range lc.entries {
+				if !inRange(k, key, end) {
+					continue
+				}
+				if wc, _ := lc.Lock(k); wc != nil {
+					ret = append(ret, wc)
+				}
+			}
+		}
+	}
+	return ret
+}
+
+func (lc *leaseCache) NotifyOps(ops []v3.Op) (wcs []<-chan struct{}) {
+	for _, op := range ops {
+		if op.IsGet() {
+			if _, wc := lc.notify(string(op.KeyBytes())); wc != nil {
+				wcs = append(wcs, wc)
+			}
+		}
+	}
+	return wcs
+}
+
+func (lc *leaseCache) MayAcquire(key string) bool {
+	lc.mu.RLock()
+	lr, ok := lc.revokes[key]
+	lc.mu.RUnlock()
+	return !ok || time.Since(lr) > revokeBackoff
+}
+
+func (lc *leaseCache) Add(key string, resp *v3.GetResponse, op v3.Op) *v3.GetResponse {
+	lk := &leaseKey{resp, resp.Header.Revision, closedCh}
 	lc.mu.Lock()
-	lc.monitorRevocation[key] = time.Now()
+	if lc.header == nil || lc.header.Revision < resp.Header.Revision {
+		lc.header = resp.Header
+	}
+	lc.entries[key] = lk
+	ret := lk.get(op)
 	lc.mu.Unlock()
+	return ret
 }
 
-func (lc *leaseCache) returnWaitChannel(key string) (*leaseInfo, chan struct{}) {
-	li := lc.checkInCache(key)
-	if li != nil {
-		lc.mu.Lock()
-		wc := li.waitc
-		lc.mu.Unlock()
-		return li, wc
+func (lc *leaseCache) Update(key, val []byte, respHeader *v3pb.ResponseHeader) {
+	li := lc.entries[string(key)]
+	if li == nil {
+		return
 	}
-	return li, nil
-}
-
-func (lc *leaseCache) returnCachedResp(ctx context.Context, key string, op v3.Op) *v3.GetResponse {
-	var resp *v3.GetResponse
-	li, wc := lc.returnWaitChannel(key)
-	if li != nil {
-		select {
-		case <-wc:
-			resp = li.response
-			break
-		case <-ctx.Done():
-			return nil
+	cacheResp := li.response
+	if len(cacheResp.Kvs) == 0 {
+		kv := &mvccpb.KeyValue{
+			Key:            key,
+			CreateRevision: respHeader.Revision,
 		}
+		cacheResp.Kvs = append(cacheResp.Kvs, kv)
+		cacheResp.Count = 1
 	}
-	if resp == nil {
-		return nil
+	cacheResp.Kvs[0].Version++
+	if cacheResp.Kvs[0].ModRevision < respHeader.Revision {
+		cacheResp.Header = respHeader
+		cacheResp.Kvs[0].ModRevision = respHeader.Revision
+		cacheResp.Kvs[0].Value = val
 	}
+}
+
+func (lc *leaseCache) Delete(key string, hdr *v3pb.ResponseHeader) {
 	lc.mu.Lock()
-	var keyCopy, valCopy []byte
-	var kvsnil bool
-	if len(resp.Kvs) == 0 || op.IsCountOnly() || (op.MaxModRev() != 0 && op.MaxModRev() <= resp.Kvs[0].ModRevision) ||
-		(op.MaxCreateRev() != 0 && op.MaxCreateRev() <= resp.Kvs[0].CreateRevision) ||
-		(op.MinModRev() != 0 && op.MinModRev() >= resp.Kvs[0].ModRevision) ||
-		(op.MinCreateRev() != 0 && op.MinCreateRev() >= resp.Kvs[0].CreateRevision) {
-		kvsnil = true
-	}
-	var kvs []*mvccpb.KeyValue
-	if len(resp.Kvs) > 0 && !kvsnil {
-		keyCopy = make([]byte, len(resp.Kvs[0].Key))
-		copy(keyCopy, resp.Kvs[0].Key)
-		if !op.IsKeysOnly() {
-			valCopy = make([]byte, len(resp.Kvs[0].Value))
-			copy(valCopy, resp.Kvs[0].Value)
-		}
-		kvs = []*mvccpb.KeyValue{
-			&mvccpb.KeyValue{
-				Key:            keyCopy,
-				CreateRevision: resp.Kvs[0].CreateRevision,
-				ModRevision:    resp.Kvs[0].ModRevision,
-				Version:        resp.Kvs[0].Version,
-				Value:          valCopy,
-				Lease:          resp.Kvs[0].Lease,
-			},
-		}
-	}
-	copyResp := &v3.GetResponse{
-		Header: respHeaderPopulate(resp.Header),
-		Kvs:    kvs,
-		More:   resp.More,
-		Count:  resp.Count,
-	}
-	lc.mu.Unlock()
-	return copyResp
+	defer lc.mu.Unlock()
+	lc.delete(key, hdr)
 }
 
-func (lkv *leasingKV) checkOpenSession() bool {
-	lkv.leases.mu.Lock()
-	defer lkv.leases.mu.Unlock()
+func (lc *leaseCache) delete(key string, hdr *v3pb.ResponseHeader) {
+	if li := lc.entries[key]; li != nil && hdr.Revision >= li.response.Header.Revision {
+		li.response.Kvs = nil
+		li.response.Header = copyHeader(hdr)
+	}
+}
+
+func (lc *leaseCache) Evict(key string) (rev int64) {
+	lc.mu.Lock()
+	defer lc.mu.Unlock()
+	if li := lc.entries[key]; li != nil {
+		rev = li.rev
+		delete(lc.entries, key)
+		lc.revokes[key] = time.Now()
+	}
+	return rev
+}
+
+func isBadOp(op v3.Op) bool { return op.Rev() > 0 || len(op.RangeBytes()) > 0 }
+
+func (lc *leaseCache) Get(ctx context.Context, op v3.Op) (*v3.GetResponse, bool) {
+	if isBadOp(op) {
+		return nil, false
+	}
+
+	key := string(op.KeyBytes())
+	li, wc := lc.notify(key)
+	if li == nil {
+		return nil, true
+	}
 	select {
-	case <-lkv.session.Done():
-	default:
-		return true
+	case <-wc:
+	case <-ctx.Done():
+		return nil, true
 	}
-	return false
+
+	lc.mu.RLock()
+	lk := *li
+	lc.mu.RUnlock()
+	return lk.get(op), true
 }
 
-func (lkv *leasingKV) addToCache(getresp *v3.GetResponse, key string) {
-	lkv.leases.mu.Lock()
-	waitc := make(chan struct{})
-	close(waitc)
-	lkv.leases.entries[key] = &leaseInfo{waitc: waitc, response: getresp, revision: getresp.Header.Revision}
-	if lkv.maxRev < getresp.Header.Revision {
-		lkv.header = getresp.Header
-	}
-	lkv.leases.mu.Unlock()
-}
-
-func (lkv *leasingKV) leaseID() v3.LeaseID {
-	lkv.leases.mu.Lock()
-	defer lkv.leases.mu.Unlock()
-	return lkv.session.Lease()
-}
-
-func (lkv *leasingKV) initializeSession(s *concurrency.Session) {
-	lkv.leases.mu.Lock()
-	lkv.session = s
-	close(lkv.sessionc)
-	lkv.leases.mu.Unlock()
-}
-
-func maxCreateRev(getResp *v3.GetResponse) int64 {
-	var maxRev int64
-	for i := range getResp.Kvs {
-		if maxRev < getResp.Kvs[i].CreateRevision {
-			maxRev = getResp.Kvs[i].CreateRevision
-		}
-	}
-	return maxRev
-}
-
-func maxModRev(getResp *v3.GetResponse) int64 {
-	var maxRev int64
-	for i := range getResp.Kvs {
-		if maxRev < getResp.Kvs[i].ModRevision {
-			maxRev = getResp.Kvs[i].ModRevision
-		}
-	}
-	return maxRev
-}
-
-func startNewSession(cl *v3.Client, ttl int) (*concurrency.Session, error) {
-	var s *concurrency.Session
-	var err error
-	if ttl > 0 {
-		s, err = concurrency.NewSession(cl, concurrency.WithTTL(ttl))
+func (lk *leaseKey) get(op v3.Op) *v3.GetResponse {
+	ret := *lk.response
+	ret.Header = copyHeader(ret.Header)
+	empty := len(ret.Kvs) == 0 || op.IsCountOnly()
+	empty = empty || (op.MinModRev() > ret.Kvs[0].ModRevision)
+	empty = empty || (op.MaxModRev() != 0 && op.MaxModRev() < ret.Kvs[0].ModRevision)
+	empty = empty || (op.MinCreateRev() > ret.Kvs[0].CreateRevision)
+	empty = empty || (op.MaxCreateRev() != 0 && op.MaxCreateRev() < ret.Kvs[0].CreateRevision)
+	if empty {
+		ret.Kvs = nil
 	} else {
-		s, err = concurrency.NewSession(cl)
+		kv := *ret.Kvs[0]
+		kv.Key = make([]byte, len(kv.Key))
+		copy(kv.Key, ret.Kvs[0].Key)
+		if !op.IsKeysOnly() {
+			kv.Value = make([]byte, len(kv.Value))
+			copy(kv.Value, ret.Kvs[0].Value)
+		}
+		ret.Kvs = []*mvccpb.KeyValue{&kv}
 	}
-	return s, err
+	return &ret
 }
 
-func respHeaderPopulate(respHeader *server.ResponseHeader) *server.ResponseHeader {
-	return &server.ResponseHeader{
-		ClusterId: respHeader.ClusterId,
-		MemberId:  respHeader.MemberId,
-		Revision:  respHeader.Revision,
-		RaftTerm:  respHeader.RaftTerm,
+func (lc *leaseCache) notify(key string) (*leaseKey, <-chan struct{}) {
+	lc.mu.RLock()
+	defer lc.mu.RUnlock()
+	if li := lc.entries[key]; li != nil {
+		return li, li.waitc
 	}
+	return nil, nil
 }
 
-func closeWaitChannel(wc []chan struct{}) {
-	for i := range wc {
-		close(wc[i])
-	}
-}
-
-func (lc *leaseCache) clearRevocationMap(ctx context.Context) {
+func (lc *leaseCache) clearOldRevokes(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(time.Second):
 			lc.mu.Lock()
-			for k, lr := range lc.monitorRevocation {
-				if time.Now().Sub(lr.Add(leasingRevokeBackoff)) > 0 {
-					delete(lc.monitorRevocation, k)
+			for k, lr := range lc.revokes {
+				if time.Now().Sub(lr.Add(revokeBackoff)) > 0 {
+					delete(lc.revokes, k)
 				}
 			}
 			lc.mu.Unlock()
 		}
 	}
+}
+
+func (lc *leaseCache) evalCmp(cmps []v3.Cmp) (cmpVal bool, ok bool) {
+	for _, cmp := range cmps {
+		if len(cmp.RangeEnd) > 0 {
+			return false, false
+		}
+		lk := lc.entries[string(cmp.Key)]
+		if lk == nil {
+			return false, false
+		}
+		if !evalCmp(lk.response, cmp) {
+			return false, true
+		}
+	}
+	return true, true
+}
+
+func (lc *leaseCache) evalOps(ops []v3.Op) ([]*v3pb.ResponseOp, bool) {
+	resps := make([]*v3pb.ResponseOp, len(ops))
+	for i, op := range ops {
+		if !op.IsGet() || isBadOp(op) {
+			// TODO: support read-only txns
+			return nil, false
+		}
+		lk := lc.entries[string(op.KeyBytes())]
+		if lk == nil {
+			return nil, false
+		}
+		resp := lk.get(op)
+		if resp == nil {
+			return nil, false
+		}
+		resps[i] = &v3pb.ResponseOp{
+			Response: &v3pb.ResponseOp_ResponseRange{
+				(*v3pb.RangeResponse)(resp),
+			},
+		}
+	}
+	return resps, true
 }
