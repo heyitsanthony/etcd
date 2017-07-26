@@ -153,6 +153,14 @@ service Cluster {
         body: "*"
     };
   }
+
+  // Rollback reverts the cluster version to the previous minor revision.
+  rpc Rollback(RollbackRequest) returns (RollbackResponse) {
+      option (google.api.http) = {
+        post: "/v3alpha/cluster/rollback"
+        body: "*"
+      };
+  }
 }
 
 service Maintenance {
@@ -831,6 +839,15 @@ message MemberListResponse {
   ResponseHeader header = 1;
   // members is a list of all members associated with the cluster.
   repeated Member members = 2;
+}
+
+message RollbackRequest {
+  // version is the target cluster protocol version for rollback.
+  string version = 1;
+}
+
+message RollbackResponse {
+  ResponseHeader header = 1;
 }
 
 message DefragmentRequest {

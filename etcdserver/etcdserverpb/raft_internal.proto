@@ -36,6 +36,7 @@ message InternalRaftRequest {
   LeaseRevokeRequest lease_revoke = 9;
 
   AlarmRequest alarm = 10;
+  RollbackRequest rollback = 11;
 
   AuthEnableRequest auth_enable = 1000;
   AuthDisableRequest auth_disable = 1011;
