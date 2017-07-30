@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/coreos/etcd/clientv3"
+	"github.com/coreos/etcd/clientv3/concurrency"
 	"github.com/coreos/etcd/clientv3/leasing"
 	"github.com/coreos/etcd/integration"
 	"github.com/coreos/etcd/pkg/testutil"
@@ -34,74 +35,47 @@ func TestLeasingPutGet1(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 3})
 	defer clus.Terminate(t)
 
-	c1 := clus.Client(0)
-	c2 := clus.Client(1)
-	//c3 := clus.Client(2)
-	lKV1, err := leasing.NewleasingKV(c1, "foo/")
-	lKV2, err := leasing.NewleasingKV(c2, "foo/")
-	lKV3, err := leasing.NewleasingKV(clus.Client(2), "foo/")
+	lKV1, err := leasing.NewKV(clus.Client(0), "foo/")
+	lKV2, err := leasing.NewKV(clus.Client(1), "foo/")
+	lKV3, err := leasing.NewKV(clus.Client(2), "foo/")
 
-	resp1, err := lKV1.Get(context.TODO(), "abc")
+	resp, err := lKV1.Get(context.TODO(), "abc")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(resp.Kvs) != 0 {
+		t.Errorf("expected nil, got %q", resp.Kvs[0].Key)
 	}
 
 	if _, err := lKV1.Put(context.TODO(), "abc", "def"); err != nil {
 		t.Fatal(err)
 	}
-
-	resp2, err := lKV2.Get(context.TODO(), "abc")
-	if err != nil {
+	if resp, err = lKV2.Get(context.TODO(), "abc"); err != nil {
 		t.Fatal(err)
 	}
-
-	resp3, err := lKV3.Get(context.TODO(), "abc")
-	if err != nil {
-		t.Fatal(err)
+	if string(resp.Kvs[0].Key) != "abc" {
+		t.Errorf("expected key=%q, got key=%q", "abc", resp.Kvs[0].Key)
+	}
+	if string(resp.Kvs[0].Value) != "def" {
+		t.Errorf("expected value=%q, got value=%q", "bar", resp.Kvs[0].Value)
 	}
 
+	if _, err := lKV3.Get(context.TODO(), "abc"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := lKV2.Put(context.TODO(), "abc", "ghi"); err != nil {
 		t.Fatal(err)
 	}
 
-	resp3, err = lKV3.Get(context.TODO(), "abc")
-	if err != nil {
+	if resp, err = lKV3.Get(context.TODO(), "abc"); err != nil {
 		t.Fatal(err)
 	}
-
-	if len(resp1.Kvs) != 0 {
-		t.Errorf("expected nil, got %q", resp1.Kvs[0].Key)
+	if string(resp.Kvs[0].Key) != "abc" {
+		t.Errorf("expected key=%q, got key=%q", "abc", resp.Kvs[0].Key)
 	}
 
-	if string(resp2.Kvs[0].Key) != "abc" {
-		t.Errorf("expected key=%q, got key=%q", "abc", resp2.Kvs[0].Key)
-	}
-
-	if string(resp2.Kvs[0].Value) != "def" {
-		t.Errorf("expected value=%q, got value=%q", "bar", resp2.Kvs[0].Value)
-	}
-
-	if string(resp3.Kvs[0].Key) != "abc" {
-		t.Errorf("expected key=%q, got key=%q", "abc", resp3.Kvs[0].Key)
-	}
-
-	if string(resp3.Kvs[0].Value) != "ghi" {
-		t.Errorf("expected value=%q, got value=%q", "bar", resp3.Kvs[0].Value)
-	}
-}
-
-func TestLeasingGet2(t *testing.T) {
-	defer testutil.AfterTest(t)
-
-	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
-	defer clus.Terminate(t)
-
-	c := clus.Client(0)
-	lKV, err := leasing.NewleasingKV(c, "foo/")
-
-	_, err = lKV.Get(context.TODO(), "abc")
-	if err != nil {
-		t.Fatal(err)
+	if string(resp.Kvs[0].Value) != "ghi" {
+		t.Errorf("expected value=%q, got value=%q", "bar", resp.Kvs[0].Value)
 	}
 }
 
@@ -111,7 +85,7 @@ func TestLeasingInterval(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
-	lkv, err := leasing.NewleasingKV(clus.Client(0), "pfx/")
+	lkv, err := leasing.NewKV(clus.Client(0), "pfx/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +125,7 @@ func TestLeasingPutInvalidateNew(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
-	lkv, err := leasing.NewleasingKV(clus.Client(0), "pfx/")
+	lkv, err := leasing.NewKV(clus.Client(0), "pfx/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +160,7 @@ func TestLeasingPutInvalidatExisting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	lkv, err := leasing.NewleasingKV(clus.Client(0), "pfx/")
+	lkv, err := leasing.NewKV(clus.Client(0), "pfx/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +192,7 @@ func TestLeasingGetSerializable(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 2})
 	defer clus.Terminate(t)
 
-	lkv, err := leasing.NewleasingKV(clus.Client(0), "pfx/")
+	lkv, err := leasing.NewKV(clus.Client(0), "pfx/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +233,7 @@ func TestLeasingPrevKey(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 2})
 	defer clus.Terminate(t)
 
-	lkv, err := leasing.NewleasingKV(clus.Client(0), "pfx/")
+	lkv, err := leasing.NewKV(clus.Client(0), "pfx/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +260,7 @@ func TestLeasingRevGet(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
-	lkv, err := leasing.NewleasingKV(clus.Client(0), "pfx/")
+	lkv, err := leasing.NewKV(clus.Client(0), "pfx/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +297,7 @@ func TestLeasingGetWithOpts(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
-	lkv, err := leasing.NewleasingKV(clus.Client(0), "pfx/")
+	lkv, err := leasing.NewKV(clus.Client(0), "pfx/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +342,7 @@ func TestLeasingConcurrentPut(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
-	lkv, err := leasing.NewleasingKV(clus.Client(0), "pfx/")
+	lkv, err := leasing.NewKV(clus.Client(0), "pfx/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,7 +389,7 @@ func TestLeasingDisconnectedGet(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
-	lkv, err := leasing.NewleasingKV(clus.Client(0), "pfx/")
+	lkv, err := leasing.NewKV(clus.Client(0), "pfx/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -444,7 +418,7 @@ func TestLeasingDeleteOwner(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
-	lkv, err := leasing.NewleasingKV(clus.Client(0), "pfx/")
+	lkv, err := leasing.NewKV(clus.Client(0), "pfx/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,11 +452,11 @@ func TestLeasingDeleteNonOwner(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
-	lkv1, err := leasing.NewleasingKV(clus.Client(0), "pfx/")
+	lkv1, err := leasing.NewKV(clus.Client(0), "pfx/")
 	if err != nil {
 		t.Fatal(err)
 	}
-	lkv2, err := leasing.NewleasingKV(clus.Client(0), "pfx/")
+	lkv2, err := leasing.NewKV(clus.Client(0), "pfx/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -514,7 +488,7 @@ func TestLeasingOverwriteResponse(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
-	lkv, err := leasing.NewleasingKV(clus.Client(0), "pfx/")
+	lkv, err := leasing.NewKV(clus.Client(0), "pfx/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -539,7 +513,7 @@ func TestLeasingOverwriteResponse(t *testing.T) {
 		t.Errorf(`expected key "k", got %q`, string(resp.Kvs[0].Key))
 	}
 	if string(resp.Kvs[0].Value) != "abc" {
-		t.Errorf(`expected value "abc", got %q`, string(resp.Kvs[0].Key))
+		t.Errorf(`expected value "abc", got %q`, string(resp.Kvs[0].Value))
 	}
 }
 
@@ -548,7 +522,7 @@ func TestLeasingOwnerPutResponse(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
-	lkv, err := leasing.NewleasingKV(clus.Client(0), "pfx/")
+	lkv, err := leasing.NewKV(clus.Client(0), "pfx/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -586,7 +560,7 @@ func TestLeasingTxnOwnerGetRange(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
-	lkv, err := leasing.NewleasingKV(clus.Client(0), "pfx/")
+	lkv, err := leasing.NewKV(clus.Client(0), "pfx/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -616,7 +590,7 @@ func TestLeasingTxnOwnerGet(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
-	lkv, err := leasing.NewleasingKV(clus.Client(0), "pfx/")
+	lkv, err := leasing.NewKV(clus.Client(0), "pfx/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -689,7 +663,7 @@ func TestLeasingTxnOwnerIf(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
-	lkv, err := leasing.NewleasingKV(clus.Client(0), "pfx/")
+	lkv, err := leasing.NewKV(clus.Client(0), "pfx/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -783,11 +757,11 @@ func TestLeasingTxnCancel(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 3})
 	defer clus.Terminate(t)
 
-	lkv1, err := leasing.NewleasingKV(clus.Client(0), "pfx/")
+	lkv1, err := leasing.NewKV(clus.Client(0), "pfx/")
 	if err != nil {
 		t.Fatal(err)
 	}
-	lkv2, err := leasing.NewleasingKV(clus.Client(1), "pfx/")
+	lkv2, err := leasing.NewKV(clus.Client(1), "pfx/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -818,11 +792,11 @@ func TestLeasingTxnNonOwnerPut(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
-	lkv, err := leasing.NewleasingKV(clus.Client(0), "pfx/")
+	lkv, err := leasing.NewKV(clus.Client(0), "pfx/")
 	if err != nil {
 		t.Fatal(err)
 	}
-	lkv2, err := leasing.NewleasingKV(clus.Client(0), "pfx/")
+	lkv2, err := leasing.NewKV(clus.Client(0), "pfx/")
 
 	if _, err := clus.Client(0).Put(context.TODO(), "k", "abc"); err != nil {
 		t.Fatal(err)
@@ -893,11 +867,11 @@ func TestLeasingTxnRandIfThenOrElse(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
-	lkv1, err1 := leasing.NewleasingKV(clus.Client(0), "pfx/")
+	lkv1, err1 := leasing.NewKV(clus.Client(0), "pfx/")
 	if err1 != nil {
 		t.Fatal(err1)
 	}
-	lkv2, err2 := leasing.NewleasingKV(clus.Client(0), "pfx/")
+	lkv2, err2 := leasing.NewKV(clus.Client(0), "pfx/")
 	if err2 != nil {
 		t.Fatal(err2)
 	}
@@ -932,8 +906,6 @@ func TestLeasingTxnRandIfThenOrElse(t *testing.T) {
 
 	// random list of comparisons, all true
 	cmps, useThen := randCmps("k-", dat)
-	fmt.Println(useThen)
-	fmt.Println(len(cmps))
 	// random list of puts/gets; unique keys
 	ops := []clientv3.Op{}
 	usedIdx := make(map[int]struct{})
@@ -1002,7 +974,7 @@ func TestLeasingOwnerPutError(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
-	lkv, err := leasing.NewleasingKV(clus.Client(0), "pfx/")
+	lkv, err := leasing.NewKV(clus.Client(0), "pfx/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1023,7 +995,7 @@ func TestLeasingOwnerDeleteError(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
-	lkv, err := leasing.NewleasingKV(clus.Client(0), "pfx/")
+	lkv, err := leasing.NewKV(clus.Client(0), "pfx/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1044,7 +1016,7 @@ func TestLeasingNonOwnerPutError(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
-	lkv, err := leasing.NewleasingKV(clus.Client(0), "pfx/")
+	lkv, err := leasing.NewKV(clus.Client(0), "pfx/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1070,7 +1042,7 @@ func testLeasingOwnerDelete(t *testing.T, del clientv3.Op) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
-	lkv, err := leasing.NewleasingKV(clus.Client(0), "0/")
+	lkv, err := leasing.NewKV(clus.Client(0), "0/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1120,11 +1092,11 @@ func TestLeasingDeleteRangeBounds(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
-	delkv, err := leasing.NewleasingKV(clus.Client(0), "0/")
+	delkv, err := leasing.NewKV(clus.Client(0), "0/")
 	if err != nil {
 		t.Fatal(err)
 	}
-	getkv, err := leasing.NewleasingKV(clus.Client(0), "0/")
+	getkv, err := leasing.NewKV(clus.Client(0), "0/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1179,11 +1151,11 @@ func testLeasingDeleteRangeContend(t *testing.T, op clientv3.Op) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
-	delkv, err := leasing.NewleasingKV(clus.Client(0), "0/")
+	delkv, err := leasing.NewKV(clus.Client(0), "0/")
 	if err != nil {
 		t.Fatal(err)
 	}
-	putkv, err := leasing.NewleasingKV(clus.Client(0), "0/")
+	putkv, err := leasing.NewKV(clus.Client(0), "0/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1240,7 +1212,7 @@ func TestLeasingPutGetDeleteConcurrent(t *testing.T) {
 
 	lkvs := make([]clientv3.KV, 16)
 	for i := range lkvs {
-		lkv, err := leasing.NewleasingKV(clus.Client(0), "pfx/")
+		lkv, err := leasing.NewKV(clus.Client(0), "pfx/")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1298,11 +1270,11 @@ func TestLeasingReconnectOwnerRevoke(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 3})
 	defer clus.Terminate(t)
 
-	lkv1, err1 := leasing.NewleasingKV(clus.Client(0), "foo/")
+	lkv1, err1 := leasing.NewKV(clus.Client(0), "foo/")
 	if err1 != nil {
 		t.Fatal(err1)
 	}
-	lkv2, err2 := leasing.NewleasingKV(clus.Client(1), "foo/")
+	lkv2, err2 := leasing.NewKV(clus.Client(1), "foo/")
 	if err2 != nil {
 		t.Fatal(err2)
 	}
@@ -1359,11 +1331,11 @@ func TestLeasingReconnectOwnerRevokeCompact(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 3})
 	defer clus.Terminate(t)
 
-	lkv1, err1 := leasing.NewleasingKV(clus.Client(0), "foo/")
+	lkv1, err1 := leasing.NewKV(clus.Client(0), "foo/")
 	if err1 != nil {
 		t.Fatal(err1)
 	}
-	lkv2, err2 := leasing.NewleasingKV(clus.Client(1), "foo/")
+	lkv2, err2 := leasing.NewKV(clus.Client(1), "foo/")
 	if err2 != nil {
 		t.Fatal(err2)
 	}
@@ -1413,7 +1385,7 @@ func TestLeasingReconnectOwnerConsistency(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
-	lkv, err := leasing.NewleasingKV(clus.Client(0), "foo/")
+	lkv, err := leasing.NewKV(clus.Client(0), "foo/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1428,13 +1400,13 @@ func TestLeasingReconnectOwnerConsistency(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for i := 0; true; i++ {
+	for i := 0; i < 10; i++ {
 		v := fmt.Sprintf("%d", i)
 		donec := make(chan struct{})
 		clus.Members[0].DropConnections()
 		go func() {
 			defer close(donec)
-			for i := 0; i < 10; i++ {
+			for i := 0; i < 20; i++ {
 				clus.Members[0].DropConnections()
 				time.Sleep(time.Millisecond)
 			}
@@ -1465,6 +1437,7 @@ func TestLeasingReconnectOwnerConsistency(t *testing.T) {
 		}
 		<-donec
 		if err != nil {
+			// TODO wrap input client to generate errors
 			break
 		}
 	}
@@ -1487,7 +1460,7 @@ func TestLeasingTxnAtomicCache(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
-	lkv, err := leasing.NewleasingKV(clus.Client(0), "foo/")
+	lkv, err := leasing.NewKV(clus.Client(0), "foo/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1565,7 +1538,7 @@ func TestLeasingReconnectTxn(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
-	lkv, err := leasing.NewleasingKV(clus.Client(0), "foo/")
+	lkv, err := leasing.NewKV(clus.Client(0), "foo/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1600,7 +1573,7 @@ func TestLeasingReconnectNonOwnerGet(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
-	lkv, err := leasing.NewleasingKV(clus.Client(0), "foo/")
+	lkv, err := leasing.NewKV(clus.Client(0), "foo/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1614,7 +1587,7 @@ func TestLeasingReconnectNonOwnerGet(t *testing.T) {
 	}
 
 	n := 0
-	for i := 0; true; i++ {
+	for i := 0; i < 10; i++ {
 		donec := make(chan struct{})
 		clus.Members[0].DropConnections()
 		go func() {
@@ -1652,7 +1625,7 @@ func TestLeasingTxnRangeCmp(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
-	lkv, err := leasing.NewleasingKV(clus.Client(0), "foo/")
+	lkv, err := leasing.NewKV(clus.Client(0), "foo/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1688,7 +1661,7 @@ func TestLeasingDo(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
-	lkv, err := leasing.NewleasingKV(clus.Client(0), "foo/")
+	lkv, err := leasing.NewKV(clus.Client(0), "foo/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1731,7 +1704,7 @@ func TestLeasingTxnOwnerPutBranch(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 3})
 	defer clus.Terminate(t)
 
-	lkv, err := leasing.NewleasingKV(clus.Client(0), "foo/")
+	lkv, err := leasing.NewKV(clus.Client(0), "foo/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1826,11 +1799,11 @@ func TestLeasingSessionExpire(t *testing.T) {
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 3})
 	defer clus.Terminate(t)
 
-	lkv, err := leasing.NewleasingKVTTL(clus.Client(0), "foo/", 1)
+	lkv, err := leasing.NewKV(clus.Client(0), "foo/", concurrency.WithTTL(1))
 	if err != nil {
 		t.Fatal(err)
 	}
-	lkv2, err := leasing.NewleasingKV(clus.Client(0), "foo/")
+	lkv2, err := leasing.NewKV(clus.Client(0), "foo/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1902,7 +1875,7 @@ func TestLeasingSessionExpireCancel(t *testing.T) {
 		},
 	}
 	for i := range tests {
-		lkv, err := leasing.NewleasingKVTTL(clus.Client(0), "foo/", 1)
+		lkv, err := leasing.NewKV(clus.Client(0), "foo/", concurrency.WithTTL(1))
 		if err != nil {
 			t.Fatal(err)
 		}
