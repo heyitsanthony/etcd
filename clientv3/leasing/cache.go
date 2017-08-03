@@ -182,6 +182,17 @@ func (lc *leaseCache) Evict(key string) (rev int64) {
 	return rev
 }
 
+func (lc *leaseCache) EvictRange(key, end string) {
+	lc.mu.Lock()
+	defer lc.mu.Unlock()
+	for k := range lc.entries {
+		if inRange(k, key, end) {
+			delete(lc.entries, key)
+			lc.revokes[key] = time.Now()
+		}
+	}
+}
+
 func isBadOp(op v3.Op) bool { return op.Rev() > 0 || len(op.RangeBytes()) > 0 }
 
 func (lc *leaseCache) Get(ctx context.Context, op v3.Op) (*v3.GetResponse, bool) {

@@ -295,7 +295,8 @@ func (lkv *leasingKV) deleteRangeRPC(ctx context.Context, maxLeaseRev int64, key
 		v3.OpDelete(key, v3.WithRange(end)),
 	).Commit()
 	if err != nil {
-		panic("delete all keys in range from cache")
+		lkv.leases.EvictRange(key, end)
+		return nil, err
 	}
 	if !resp.Succeeded {
 		return nil, nil
