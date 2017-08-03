@@ -199,7 +199,6 @@ func (lc *leaseCache) Get(ctx context.Context, op v3.Op) (*v3.GetResponse, bool)
 	if isBadOp(op) {
 		return nil, false
 	}
-
 	key := string(op.KeyBytes())
 	li, wc := lc.notify(key)
 	if li == nil {
@@ -210,11 +209,11 @@ func (lc *leaseCache) Get(ctx context.Context, op v3.Op) (*v3.GetResponse, bool)
 	case <-ctx.Done():
 		return nil, true
 	}
-
 	lc.mu.RLock()
 	lk := *li
+	ret := lk.get(op)
 	lc.mu.RUnlock()
-	return lk.get(op), true
+	return ret, true
 }
 
 func (lk *leaseKey) get(op v3.Op) *v3.GetResponse {
