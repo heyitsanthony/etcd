@@ -1489,8 +1489,8 @@ func TestLeasingTxnAtomicCache(t *testing.T) {
 	f := func() {
 		defer wgPutters.Done()
 		for i := 0; i < 10; i++ {
-			if _, err = lkv.Txn(context.TODO()).Then(puts...).Commit(); err != nil {
-				t.Fatal(err)
+			if _, puterr := lkv.Txn(context.TODO()).Then(puts...).Commit(); puterr != nil {
+				t.Fatal(puterr)
 			}
 		}
 	}
