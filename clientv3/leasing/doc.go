@@ -25,11 +25,9 @@
 //
 // The first range request acquires the lease by adding the leasing key ("leasing-prefix"/key) on the server and stores the key locally.
 // Further linearized read requests using 'cli.leasing' will be served locally as long as the lease exists:
-//
 // 		cli.Put(context.TODO(), "abc", "123")
 //
 // 	Lease Acquisition:
-//
 //		leasingCli.Get(context.TODO(), "abc")
 //
 //	Local reads:
