@@ -31,7 +31,6 @@
 //		leasingCli.Get(context.TODO(), "abc")
 //
 //	Local reads:
-//
 //		resp,_ := leasingCli.Get(context.TODO(), "abc")
 //		fmt.Printf("%s\n", resp.Kvs[0].Value)
 //		//Output: 123 (served locally)
