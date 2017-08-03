@@ -141,19 +141,22 @@ func (lkv *leasingKV) monitorLease(ctx context.Context, key string, rev int64) {
 			if err != nil {
 				continue
 			}
+			rev = resp.Header.Revision
 			if len(resp.Kvs) == 0 || string(resp.Kvs[0].Value) == "REVOKE" {
-				lkv.rescind(cctx, key)
+				lkv.rescind(cctx, key, rev)
 				return
 			}
-			rev = resp.Header.Revision
 		}
 		wch := lkv.cl.Watch(cctx, lkv.pfx+key, v3.WithRev(rev+1))
 		for resp := range wch {
 			for _, ev := range resp.Events {
-				if string(ev.Kv.Value) == "REVOKE" {
-					lkv.rescind(cctx, key)
-					return
+				if string(ev.Kv.Value) != "REVOKE" {
+					continue
 				}
+				if v3.LeaseID(ev.Kv.Lease) == lkv.leaseID() {
+					lkv.rescind(cctx, key, ev.Kv.ModRevision)
+				}
+				return
 			}
 		}
 		rev = 0
@@ -161,12 +164,11 @@ func (lkv *leasingKV) monitorLease(ctx context.Context, key string, rev int64) {
 }
 
 // rescind releases a lease from this client.
-func (lkv *leasingKV) rescind(ctx context.Context, key string) {
-	rev := lkv.leases.Evict(key)
-	if rev == 0 {
+func (lkv *leasingKV) rescind(ctx context.Context, key string, rev int64) {
+	if lkv.leases.Evict(key) > rev {
 		return
 	}
-	cmp := v3.Compare(v3.CreateRevision(lkv.pfx+key), "=", rev)
+	cmp := v3.Compare(v3.CreateRevision(lkv.pfx+key), "<", rev)
 	op := v3.OpDelete(lkv.pfx + key)
 	for ctx.Err() == nil {
 		if _, err := lkv.kv.Txn(ctx).If(cmp).Then(op).Commit(); err == nil {
