@@ -104,6 +104,8 @@ type Config struct {
 	StrictReconfigCheck bool   `json:"strict-reconfig-check"`
 	EnableV2            bool   `json:"enable-v2"`
 
+	ExperimentalEnableV2V3 string `json:"experimental-enable-v2v3"`
+
 	// security
 
 	ClientTLSInfo transport.TLSInfo
