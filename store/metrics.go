@@ -86,6 +86,8 @@ const (
 )
 
 func init() {
+	// HACK: don't MERGE
+	return
 	prometheus.MustRegister(readCounter)
 	prometheus.MustRegister(writeCounter)
 	prometheus.MustRegister(expireCounter)
