@@ -16,7 +16,8 @@ package v2v3
 
 import (
 	"context"
-	"fmt"
+	"path"
+	"strings"
 
 	"github.com/coreos/etcd/clientv3"
 	etcdErr "github.com/coreos/etcd/error"
@@ -24,14 +25,11 @@ import (
 )
 
 func (s *v2v3Store) Watch(prefix string, recursive, stream bool, sinceIndex uint64) (store.Watcher, error) {
-	if recursive {
-		// TODO: watch all keys and filter
-		return nil, fmt.Errorf("recursive unsupported")
-	}
 	ctx, cancel := context.WithCancel(s.ctx)
 	wch := s.c.Watch(
 		ctx,
-		mkPath(prefix),
+		// TODO: very pricey; use a single store-wide watch
+		v2Path,
 		clientv3.WithPrefix(),
 		clientv3.WithRev(mkV3Rev(sinceIndex)),
 		clientv3.WithCreatedNotify(),
@@ -42,6 +40,8 @@ func (s *v2v3Store) Watch(prefix string, recursive, stream bool, sinceIndex uint
 		return nil, etcdErr.NewError(etcdErr.EcodeRaftInternal, prefix, 0)
 	}
 
+	mkPath(prefix)
+
 	evc, donec := make(chan *store.Event), make(chan struct{})
 	go func() {
 		defer func() {
@@ -49,8 +49,25 @@ func (s *v2v3Store) Watch(prefix string, recursive, stream bool, sinceIndex uint
 			close(donec)
 		}()
 		for resp := range wch {
-			for _, ev := range resp.Events {
-				evc <- mkV2Event(resp, ev)
+			for _, ev := range mkV2Events(resp) {
+				k := ev.Node.Key
+				if recursive {
+					if !strings.HasPrefix(k, prefix) {
+						continue
+					}
+					// ignore hidden keys
+					if path.Base(k)[0] == '_' {
+						continue
+					}
+				}
+				if !recursive && k != prefix {
+					continue
+				}
+				select {
+				case evc <- ev:
+				case <-ctx.Done():
+					return
+				}
 				if !stream {
 					return
 				}
@@ -66,23 +83,44 @@ func (s *v2v3Store) Watch(prefix string, recursive, stream bool, sinceIndex uint
 	}, nil
 }
 
-func mkV2Event(wr clientv3.WatchResponse, ev *clientv3.Event) *store.Event {
-	act := ""
-	// TODO: more accurate action tracking / fewer actions in interface
-	switch {
-	case ev.IsCreate():
-		act = store.Create
-	case ev.IsModify():
-		act = store.Update
-	case ev.Type == clientv3.EventTypeDelete:
-		act = store.Delete
+func mkV2Events(wr clientv3.WatchResponse) (evs []*store.Event) {
+	for _, rev := range mkRevs(wr) {
+		var act, key *clientv3.Event
+		for _, ev := range rev {
+			if string(ev.Kv.Key) == actionKey {
+				act = ev
+			} else if key != nil && len(key.Kv.Key) < len(ev.Kv.Key) {
+				// use longest key to ignore intermediate new
+				// directories from Create.
+				key = ev
+			} else if key == nil {
+				key = ev
+			}
+		}
+		v2ev := &store.Event{
+			Action:    string(act.Kv.Value),
+			Node:      mkV2Node(key.Kv),
+			PrevNode:  mkV2Node(key.PrevKv),
+			EtcdIndex: mkV2Rev(wr.Header.Revision),
+		}
+		evs = append(evs, v2ev)
 	}
-	return &store.Event{
-		Action:    act,
-		Node:      mkV2Node(ev.Kv),
-		PrevNode:  mkV2Node(ev.PrevKv),
-		EtcdIndex: mkV2Rev(wr.Header.Revision),
+	return evs
+}
+
+func mkRevs(wr clientv3.WatchResponse) (revs [][]*clientv3.Event) {
+	var curRev []*clientv3.Event
+	for _, ev := range wr.Events {
+		if curRev != nil && ev.Kv.ModRevision != curRev[0].Kv.ModRevision {
+			revs = append(revs, curRev)
+			curRev = nil
+		}
+		curRev = append(curRev, ev)
 	}
+	if curRev != nil {
+		revs = append(revs, curRev)
+	}
+	return revs
 }
 
 type v2v3Watcher struct {

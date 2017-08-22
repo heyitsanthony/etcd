@@ -160,10 +160,11 @@ func (s *v2v3Store) Set(
 			return nil
 		}
 		stm.Put(key, value, clientv3.WithPrevKV())
+		stm.Put(actionKey, store.Set)
 		return nil
 	}
 
-	resp, err := concurrency.NewSTM(s.c, applyf)
+	resp, err := s.newSTM(applyf)
 	if err != nil {
 		return nil, err
 	}
@@ -173,8 +174,7 @@ func (s *v2v3Store) Set(
 
 	createRev := resp.Header.Revision
 	var pn *store.NodeExtern
-	if presp := resp.Responses[0].GetResponsePut(); presp.PrevKv != nil && presp.PrevKv.CreateRevision > 0 {
-		pkv := presp.PrevKv
+	if pkv := prevKeyFromPuts(resp); pkv != nil {
 		pn = mkV2Node(pkv)
 		createRev = pkv.CreateRevision
 	}
@@ -218,10 +218,11 @@ func (s *v2v3Store) Update(nodePath, newValue string, expireOpts store.TTLOption
 			return nil
 		}
 		stm.Put(key, newValue, clientv3.WithPrevKV())
+		stm.Put(actionKey, store.Update)
 		return nil
 	}
 
-	resp, err := concurrency.NewSTM(s.c, applyf)
+	resp, err := s.newSTM(applyf)
 	if err != nil {
 		return nil, err
 	}
@@ -229,7 +230,7 @@ func (s *v2v3Store) Update(nodePath, newValue string, expireOpts store.TTLOption
 		return nil, etcdErr.NewError(etcdErr.EcodeNotFile, nodePath, mkV2Rev(resp.Header.Revision))
 	}
 
-	pkv := resp.Responses[0].GetResponsePut().PrevKv
+	pkv := prevKeyFromPuts(resp)
 	return &store.Event{
 		Action: store.Update,
 		Node: &store.NodeExtern{
@@ -296,10 +297,11 @@ func (s *v2v3Store) Create(
 			key += "/"
 		}
 		stm.Put(key, value)
+		stm.Put(actionKey, store.Create)
 		return nil
 	}
 
-	resp, err := concurrency.NewSTM(s.c, applyf)
+	resp, err := s.newSTM(applyf)
 	if err != nil {
 		return nil, err
 	}
@@ -344,6 +346,7 @@ func (s *v2v3Store) CompareAndSwap(
 		makeCompare(nodePath, prevValue, prevIndex)...,
 	).Then(
 		clientv3.OpPut(key, value, clientv3.WithPrevKV()),
+		clientv3.OpPut(actionKey, store.CompareAndSwap),
 	).Else(
 		clientv3.OpGet(key),
 		clientv3.OpGet(key+"/"),
@@ -382,11 +385,13 @@ func (s *v2v3Store) Delete(nodePath string, dir, recursive bool) (*store.Event, 
 		return s.deleteEmptyDir(nodePath)
 	}
 
-	dels := make([]clientv3.Op, maxPathDepth)
+	dels := make([]clientv3.Op, maxPathDepth+1)
 	dels[0] = clientv3.OpDelete(mkPath(nodePath)+"/", clientv3.WithPrevKV())
 	for i := 1; i < maxPathDepth; i++ {
 		dels[i] = clientv3.OpDelete(mkPathDepth(nodePath, i), clientv3.WithPrefix())
 	}
+	dels[maxPathDepth] = clientv3.OpPut(actionKey, store.Delete)
+
 	resp, err := s.c.Txn(s.ctx).If(
 		clientv3.Compare(clientv3.Version(mkPath(nodePath)+"/"), ">", 0),
 		clientv3.Compare(clientv3.Version(mkPathDepth(nodePath, maxPathDepth)+"/"), "=", 0),
@@ -412,6 +417,7 @@ func (s *v2v3Store) deleteEmptyDir(nodePath string) (*store.Event, error) {
 		clientv3.Compare(clientv3.Version(mkPathDepth(nodePath, 1)), "=", 0).WithPrefix(),
 	).Then(
 		clientv3.OpDelete(mkPath(nodePath)+"/", clientv3.WithPrevKV()),
+		clientv3.OpPut(actionKey, store.Delete),
 	).Commit()
 	if err != nil {
 		return nil, err
@@ -435,6 +441,7 @@ func (s *v2v3Store) deleteNode(nodePath string) (*store.Event, error) {
 		clientv3.Compare(clientv3.Version(mkPath(nodePath)+"/"), "=", 0),
 	).Then(
 		clientv3.OpDelete(mkPath(nodePath), clientv3.WithPrevKV()),
+		clientv3.OpPut(actionKey, store.Delete),
 	).Commit()
 	if err != nil {
 		return nil, err
@@ -469,6 +476,7 @@ func (s *v2v3Store) CompareAndDelete(nodePath, prevValue string, prevIndex uint6
 		makeCompare(nodePath, prevValue, prevIndex)...,
 	).Then(
 		clientv3.OpDelete(key, clientv3.WithPrevKV()),
+		clientv3.OpPut(actionKey, store.CompareAndDelete),
 	).Else(
 		clientv3.OpGet(key),
 		clientv3.OpGet(key+"/"),
@@ -553,6 +561,9 @@ func mkPathDepth(nodePath string, depth int) string {
 	return fmt.Sprintf("/v2/k/%03d/%s", n, normalForm)
 }
 
+var v2Path = "/v2/"
+var actionKey = "/v2/act"
+
 func isRoot(s string) bool { return len(s) == 0 || s == "/" || s == "/0" || s == "/1" }
 
 func mkV2Rev(v3Rev int64) uint64 {
@@ -569,6 +580,7 @@ func mkV3Rev(v2Rev uint64) int64 {
 	return int64(v2Rev + 1)
 }
 
+// mkV2Node creates a V2 NodeExtern from a V3 KeyValue
 func mkV2Node(kv *mvccpb.KeyValue) *store.NodeExtern {
 	if kv == nil {
 		return nil
@@ -584,4 +596,20 @@ func mkV2Node(kv *mvccpb.KeyValue) *store.NodeExtern {
 		n.Value = &v
 	}
 	return n
+}
+
+// prevKeyFromPuts gets the prev key that is being put; ignores
+// the put action response.
+func prevKeyFromPuts(resp *clientv3.TxnResponse) *mvccpb.KeyValue {
+	for _, r := range resp.Responses {
+		pkv := r.GetResponsePut().PrevKv
+		if pkv != nil && pkv.CreateRevision > 0 {
+			return pkv
+		}
+	}
+	return nil
+}
+
+func (s *v2v3Store) newSTM(applyf func(concurrency.STM) error) (*clientv3.TxnResponse, error) {
+	return concurrency.NewSTM(s.c, applyf, concurrency.WithIsolation(concurrency.Serializable))
 }
