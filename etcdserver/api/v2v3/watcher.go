@@ -16,7 +16,6 @@ package v2v3
 
 import (
 	"context"
-	"path"
 	"strings"
 
 	"github.com/coreos/etcd/clientv3"
@@ -55,8 +54,10 @@ func (s *v2v3Store) Watch(prefix string, recursive, stream bool, sinceIndex uint
 					if !strings.HasPrefix(k, prefix) {
 						continue
 					}
-					// ignore hidden keys
-					if path.Base(k)[0] == '_' {
+					// accept events on hidden keys given in prefix
+					k = strings.Replace(k, prefix, "/", 1)
+					// ignore hidden keys deeper than prefix
+					if strings.Contains(k, "/_") {
 						continue
 					}
 				}
