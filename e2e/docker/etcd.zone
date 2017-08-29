@@ -12,3 +12,11 @@ ns IN A 127.0.0.1
 m1 IN A 127.0.0.1
 m2 IN A 127.0.0.1
 m3 IN A 127.0.0.1
+
+_etcd-server._tcp.example.com. 1 IN	SRV	0 0 4760 m1.example.com.
+_etcd-server._tcp.example.com. 1 IN	SRV	0 0 4760 m2.example.com.
+_etcd-server._tcp.example.com. 1 IN	SRV	0 0 4760 m3.example.com.
+
+_etcd-server-ssl._tcp.example.com. 1 IN	SRV	0 0 4760 m1.example.com.
+_etcd-server-ssl._tcp.example.com. 1 IN	SRV	0 0 4760 m2.example.com.
+_etcd-server-ssl._tcp.example.com. 1 IN	SRV	0 0 4760 m3.example.com.
