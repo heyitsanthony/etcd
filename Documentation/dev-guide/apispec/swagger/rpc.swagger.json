@@ -555,6 +555,33 @@
         }
       }
     },
+    "/v3alpha/cluster/rollback": {
+      "post": {
+        "tags": [
+          "Cluster"
+        ],
+        "summary": "Rollback reverts the cluster version to the previous minor revision.",
+        "operationId": "Rollback",
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/etcdserverpbRollbackRequest"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "(empty)",
+            "schema": {
+              "$ref": "#/definitions/etcdserverpbRollbackResponse"
+            }
+          }
+        }
+      }
+    },
     "/v3alpha/kv/compaction": {
       "post": {
         "tags": [
@@ -2132,6 +2159,23 @@
         },
         "response_txn": {
           "$ref": "#/definitions/etcdserverpbTxnResponse"
+        }
+      }
+    },
+    "etcdserverpbRollbackRequest": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "description": "version is the target cluster protocol version for rollback.",
+          "type": "string"
+        }
+      }
+    },
+    "etcdserverpbRollbackResponse": {
+      "type": "object",
+      "properties": {
+        "header": {
+          "$ref": "#/definitions/etcdserverpbResponseHeader"
         }
       }
     },

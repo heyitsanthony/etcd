@@ -61,6 +61,8 @@
 		MemberUpdateResponse
 		MemberListRequest
 		MemberListResponse
+		RollbackRequest
+		RollbackResponse
 		DefragmentRequest
 		DefragmentResponse
 		MoveLeaderRequest
