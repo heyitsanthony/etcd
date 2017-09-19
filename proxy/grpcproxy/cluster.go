@@ -175,3 +175,13 @@ func (cp *clusterProxy) MemberList(ctx context.Context, r *pb.MemberListRequest)
 	resp := (pb.MemberListResponse)(*mresp)
 	return &resp, err
 }
+
+func (cp *clusterProxy) Rollback(ctx context.Context, r *pb.RollbackRequest) (*pb.RollbackResponse, error) {
+	mresp, err := cp.clus.MemberRollback(ctx, 123)
+	panic("respect ID")
+	if err != nil {
+		return nil, err
+	}
+	resp := (pb.RollbackResponse)(*mresp)
+	return &resp, err
+}
