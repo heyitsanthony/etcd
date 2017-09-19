@@ -18,6 +18,8 @@ package backend
 
 import bolt "github.com/coreos/bbolt"
 
-var boltOpenOptions *bolt.Options = nil
+var boltOpenOptions *bolt.Options = &bolt.Options{
+	NoFreelistSync: true,
+}
 
 func (bcfg *BackendConfig) mmapSize() int { return int(bcfg.MmapSize) }
