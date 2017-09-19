@@ -99,6 +99,8 @@ type BackendConfig struct {
 	BatchLimit int
 	// MmapSize is the number of bytes to mmap for the backend.
 	MmapSize uint64
+	// ReadOnly is whether to open the backend in read-only mode.
+	ReadOnly bool
 }
 
 func DefaultBackendConfig() BackendConfig {
@@ -125,6 +127,7 @@ func newBackend(bcfg BackendConfig) *backend {
 		*bopts = *boltOpenOptions
 	}
 	bopts.InitialMmapSize = bcfg.mmapSize()
+	bopts.ReadOnly = bcfg.ReadOnly
 
 	db, err := bolt.Open(bcfg.Path, 0600, bopts)
 	if err != nil {
