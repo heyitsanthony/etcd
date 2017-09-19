@@ -22,11 +22,12 @@ import (
 )
 
 type (
-	Member               pb.Member
-	MemberListResponse   pb.MemberListResponse
-	MemberAddResponse    pb.MemberAddResponse
-	MemberRemoveResponse pb.MemberRemoveResponse
-	MemberUpdateResponse pb.MemberUpdateResponse
+	Member                 pb.Member
+	MemberListResponse     pb.MemberListResponse
+	MemberAddResponse      pb.MemberAddResponse
+	MemberRemoveResponse   pb.MemberRemoveResponse
+	MemberUpdateResponse   pb.MemberUpdateResponse
+	MemberRollbackResponse pb.RollbackResponse
 )
 
 type Cluster interface {
@@ -41,6 +42,9 @@ type Cluster interface {
 
 	// MemberUpdate updates the peer addresses of the member.
 	MemberUpdate(ctx context.Context, id uint64, peerAddrs []string) (*MemberUpdateResponse, error)
+
+	// MemberRollback reverts a member's cluster version to the previous minor revision.
+	MemberRollback(ctx context.Context, id uint64) (*MemberRollbackResponse, error)
 }
 
 type cluster struct {
@@ -98,4 +102,14 @@ func (c *cluster) MemberList(ctx context.Context) (*MemberListResponse, error) {
 			return nil, toErr(ctx, err)
 		}
 	}
+}
+
+func (c *cluster) MemberRollback(ctx context.Context, id uint64) (*MemberRollbackResponse, error) {
+	r := &pb.RollbackRequest{}
+	resp, err := c.remote.Rollback(ctx, r)
+	panic("needs to use ID")
+	if err != nil {
+		return nil, toErr(ctx, err)
+	}
+	return (*MemberRollbackResponse)(resp), nil
 }
