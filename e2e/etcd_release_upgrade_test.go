@@ -16,7 +16,6 @@ package e2e
 
 import (
 	"fmt"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -29,15 +28,10 @@ import (
 // TestReleaseUpgrade ensures that changes to master branch does not affect
 // upgrade from latest etcd releases.
 func TestReleaseUpgrade(t *testing.T) {
-	lastReleaseBinary := binDir + "/etcd-last-release"
-	if !fileutil.Exist(lastReleaseBinary) {
-		t.Skipf("%q does not exist", lastReleaseBinary)
-	}
-
 	defer testutil.AfterTest(t)
 
 	copiedCfg := configNoTLS
-	copiedCfg.execPath = lastReleaseBinary
+	copiedCfg.execPath = lastReleaseEtcd(t)
 	copiedCfg.snapCount = 3
 	copiedCfg.baseScheme = "unix" // to avoid port conflict
 
@@ -50,23 +44,10 @@ func TestReleaseUpgrade(t *testing.T) {
 			t.Fatalf("error closing etcd processes (%v)", errC)
 		}
 	}()
-	// 3.0 boots as 2.3 then negotiates up to 3.0
-	// so there's a window at boot time where it doesn't have V3rpcCapability enabled
-	// poll /version until etcdcluster is >2.3.x before making v3 requests
-	for i := 0; i < 7; i++ {
-		if err = cURLGet(epc, cURLReq{endpoint: "/version", expected: `"etcdcluster":"` + version.Cluster(version.Version)}); err != nil {
-			t.Logf("#%d: v3 is not ready yet (%v)", i, err)
-			time.Sleep(time.Second)
-			continue
-		}
-		break
-	}
-	if err != nil {
+	if err = cURLGet(epc, cURLReq{endpoint: "/version", expected: `"etcdcluster":"` + version.Cluster(version.Version)}); err != nil {
 		t.Fatalf("cannot pull version (%v)", err)
 	}
 
-	os.Setenv("ETCDCTL_API", "3")
-	defer os.Unsetenv("ETCDCTL_API")
 	cx := ctlCtx{
 		t:           t,
 		cfg:         configNoTLS,
@@ -77,8 +58,6 @@ func TestReleaseUpgrade(t *testing.T) {
 	var kvs []kv
 	for i := 0; i < 5; i++ {
 		kvs = append(kvs, kv{key: fmt.Sprintf("foo%d", i), val: "bar"})
-	}
-	for i := range kvs {
 		if err := ctlV3Put(cx, kvs[i].key, kvs[i].val, ""); err != nil {
 			cx.t.Fatalf("#%d: ctlV3Put error (%v)", i, err)
 		}
@@ -94,25 +73,17 @@ func TestReleaseUpgrade(t *testing.T) {
 		if err := epc.procs[i].Restart(); err != nil {
 			t.Fatalf("error restarting etcd process (%v)", err)
 		}
-
-		for j := range kvs {
-			if err := ctlV3Get(cx, []string{kvs[j].key}, []kv{kvs[j]}...); err != nil {
-				cx.t.Fatalf("#%d-%d: ctlV3Get error (%v)", i, j, err)
-			}
+		if err := ctlV3Get(cx, []string{"--prefix", "foo"}, kvs...); err != nil {
+			t.Fatalf("#%d: ctlV3Get error (%v)", i, err)
 		}
 	}
 }
 
 func TestReleaseUpgradeWithRestart(t *testing.T) {
-	lastReleaseBinary := binDir + "/etcd-last-release"
-	if !fileutil.Exist(lastReleaseBinary) {
-		t.Skipf("%q does not exist", lastReleaseBinary)
-	}
-
 	defer testutil.AfterTest(t)
 
 	copiedCfg := configNoTLS
-	copiedCfg.execPath = lastReleaseBinary
+	copiedCfg.execPath = lastReleaseEtcd(t)
 	copiedCfg.snapCount = 10
 	copiedCfg.baseScheme = "unix"
 
@@ -126,8 +97,6 @@ func TestReleaseUpgradeWithRestart(t *testing.T) {
 		}
 	}()
 
-	os.Setenv("ETCDCTL_API", "3")
-	defer os.Unsetenv("ETCDCTL_API")
 	cx := ctlCtx{
 		t:           t,
 		cfg:         configNoTLS,
@@ -137,9 +106,7 @@ func TestReleaseUpgradeWithRestart(t *testing.T) {
 	}
 	var kvs []kv
 	for i := 0; i < 50; i++ {
-		kvs = append(kvs, kv{key: fmt.Sprintf("foo%d", i), val: "bar"})
-	}
-	for i := range kvs {
+		kvs = append(kvs, kv{key: fmt.Sprintf("foo%02d", i), val: "bar"})
 		if err := ctlV3Put(cx, kvs[i].key, kvs[i].val, ""); err != nil {
 			cx.t.Fatalf("#%d: ctlV3Put error (%v)", i, err)
 		}
@@ -165,7 +132,61 @@ func TestReleaseUpgradeWithRestart(t *testing.T) {
 	}
 	wg.Wait()
 
-	if err := ctlV3Get(cx, []string{kvs[0].key}, []kv{kvs[0]}...); err != nil {
+	if err := ctlV3Get(cx, []string{"--prefix", "foo"}, kvs...); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestReleaseAbandonUpgrade checks that after partially upgrading a cluster
+// restarting with the previous minor revision binary will work with the
+// same data directory.
+func TestReleaseAbandonUpgrade(t *testing.T) {
+	defer testutil.AfterTest(t)
+
+	cfg := configNoTLS
+	cfg.execPath = lastReleaseEtcd(t)
+	cfg.snapCount = 3
+	cfg.baseScheme = "unix"
+
+	epc, err := newEtcdProcessCluster(&cfg)
+	testutil.AssertNil(t, err)
+	defer func() { testutil.AssertNil(t, epc.Close()) }()
+
+	cx := ctlCtx{
+		t:           t,
+		cfg:         configNoTLS,
+		dialTimeout: 7 * time.Second,
+		quorum:      true,
+		epc:         epc,
+	}
+	kvs := make([]kv, 5)
+	for i := range kvs {
+		kvs[i] = kv{key: fmt.Sprintf("foo%d", i), val: "bar"}
+		testutil.AssertNil(t, ctlV3Put(cx, kvs[i].key, kvs[i].val, ""))
+	}
+
+	// partially upgrade
+	for _, proc := range epc.procs[1:] {
+		testutil.AssertNil(t, proc.Stop())
+		proc.Config().execPath = binDir + "/etcd"
+		proc.Config().keepDataDir = true
+		testutil.AssertNil(t, proc.Restart())
+	}
+
+	// downgrade
+	for _, proc := range epc.procs[1:] {
+		testutil.AssertNil(t, proc.Stop())
+		proc.Config().execPath = cfg.execPath
+		testutil.AssertNil(t, proc.Restart())
+		err := ctlV3Get(cx, []string{"--prefix", "foo"}, kvs...)
+		testutil.AssertNil(t, err)
+	}
+}
+
+func lastReleaseEtcd(t *testing.T) string {
+	lastReleaseBinary := binDir + "/etcd-last-release"
+	if !fileutil.Exist(lastReleaseBinary) {
+		t.Skipf("%q does not exist", lastReleaseBinary)
+	}
+	return lastReleaseBinary
 }
